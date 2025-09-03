@@ -1,0 +1,7 @@
+# Core ROS Python deps
+numpy
+pyyaml
+packaging
+
+# Quality-of-life (logging, CLI colors, etc.)
+argcomplete

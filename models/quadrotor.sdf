@@ -1,0 +1,58 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <model name="quadrotor">
+    <pose>0 0 0.2 0 0 0</pose>
+    <link name="base_link">
+      <inertial>
+        <mass>1.0</mass>
+        <inertia>
+          <ixx>0.03</ixx>
+          <iyy>0.03</iyy>
+          <izz>0.06</izz>
+        </inertia>
+      </inertial>
+      <collision name="collision">
+        <geometry>
+          <cylinder>
+            <radius>0.1</radius>
+            <length>0.05</length>
+          </cylinder>
+        </geometry>
+      </collision>
+      <visual name="visual">
+        <geometry>
+          <cylinder>
+            <radius>0.1</radius>
+            <length>0.05</length>
+          </cylinder>
+        </geometry>
+      </visual>
+    </link>
+
+    <!-- Multirotor velocity control plugin -->
+    <plugin name="quadrotor_control" filename="gz-sim-multicopter-velocity-control-system">
+      <ros>
+        <namespace>/drone1</namespace>
+        <topic>/cmd_vel</topic>
+      </ros>
+      <link_name>base_link</link_name>
+    </plugin>
+
+    <!-- IMU sensor -->
+    <plugin name="imu_plugin" filename="gz-sim-imu-system">
+      <topic>/imu</topic>
+    </plugin>
+
+    <!-- Camera sensor -->
+    <plugin name="camera_plugin" filename="gz-sim-camera-system">
+      <camera name="front_camera">
+        <horizontal_fov>1.047</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.1</near>
+          <
+
