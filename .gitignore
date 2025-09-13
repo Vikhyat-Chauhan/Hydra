@@ -1,5 +1,6 @@
 # Ignore Python virtual environment
 venv/
+models/generated/
 
 # Ignore Python cache files
 __pycache__/
