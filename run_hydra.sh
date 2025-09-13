@@ -13,7 +13,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
 echo "==> 1) Ensuring base system packages"
-PKGS=(python3-venv python3-yaml python3-numpy python3-packaging python3-argcomplete python3-noise)
+PKGS=(python3-venv python3-yaml python3-numpy python3-packaging python3-argcomplete python3-noise python3-gz-transport13 python3-gz-msgs10)
 MISSING=()
 for p in "${PKGS[@]}"; do
   if ! dpkg -s "$p" >/dev/null 2>&1; then MISSING+=("$p"); fi
@@ -113,13 +113,15 @@ if [[ "${XDG_SESSION_TYPE:-}" != "x11" ]]; then
   echo "NOTE: XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-unknown}. Gazebo/keyboard UI typically works best on X11."
 fi
 
+# python3 generate_restricted_zones.py --pass-through --visual-alpha 0.7
+# python3 generate_restricted_zones.py --color 0.0,0.3,1.0 --visual-alpha 0.0
 echo "==> 6) Running Obstacle Generating: $PY_OBSGEN_SCRIPT"
 if [[ ! -f "$PY_OBSGEN_SCRIPT" ]]; then
   echo "ERROR: $PY_OBSGEN_SCRIPT not found in the tools folder."
   exit 1
 fi
 
-python3 "$PY_OBSGEN_SCRIPT" --density 0.2 --corr-len 10 # <- removed --seed 1234 to randomize
+python3 "$PY_OBSGEN_SCRIPT" --pass-through --visual-alpha 0.0 --density 0.2 --corr-len 10 # <- removed --seed 1234 to randomize
 
 echo "==> 7) Running Target Generating: $PY_TARGEN_SCRIPT"
 if [[ ! -f "$PY_TARGEN_SCRIPT" ]]; then
