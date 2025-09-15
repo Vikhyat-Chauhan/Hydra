@@ -1,7 +1,7 @@
 # Ignore Python virtual environment
 venv/
 models/generated/
-
+third_party/
 # Ignore Python cache files
 __pycache__/
 *.pyc
