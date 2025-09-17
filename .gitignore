@@ -2,6 +2,7 @@
 venv/
 models/generated/
 third_party/
+logs/
 # Ignore Python cache files
 __pycache__/
 *.pyc

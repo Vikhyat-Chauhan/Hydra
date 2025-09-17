@@ -4,7 +4,6 @@ set -eo pipefail
 # --- Config ---
 REQS_FILE="requirements.txt"
 VENV_DIR="venv"
-PY_SCRIPT="hydra_gzbb_cli.py"   # your ROS-free controller
 PY_OBSGEN_SCRIPT="tools/generate_restricted_zones.py"
 PY_TARGEN_SCRIPT="tools/generate_target.py"
 # ---------------
@@ -131,10 +130,5 @@ fi
 
 python3 "$PY_TARGEN_SCRIPT" # <- removed --seed 42 to randomize
 
-echo "==> 8) Running controller: $PY_SCRIPT"
-if [[ ! -f "$PY_SCRIPT" ]]; then
-  echo "ERROR: $PY_SCRIPT not found next to this script."
-  exit 1
-fi
-
-python "$PY_SCRIPT"
+echo "==> 8) Running controller module"
+python3 -m "hydra_teleop.main"

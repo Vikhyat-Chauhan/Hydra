@@ -1,3 +1,4 @@
+#Retired Script
 """
 A bit of History:
 I tried several methods to get drone positions when the simulation is running :
