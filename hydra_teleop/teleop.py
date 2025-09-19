@@ -56,11 +56,10 @@ class GzTeleop:
         self._thread = threading.Thread(target=self._publish_loop, daemon=True)
         self._thread.start()
 
-    def set_cmd(self, vx: float, vy: float, vz: float, wz: float) -> None:
-        """Update the held velocity that the loop will keep publishing."""
+    def set_cmd(self, vx, vy, vz, wz):
         with self._lock:
             self._vx, self._vy, self._vz, self._wz = vx, vy, vz, wz
-            self._logger.log(source="GzTeleop", event="set_cmd", message="", vx = self._vx, vy = self._vy, vz = self._vz, wx = 0, wy = 0, wz = self._wz)
+            self._pub.send((vx, vy, vz), (0.0, 0.0, wz))
 
     def publish_once(
         self,

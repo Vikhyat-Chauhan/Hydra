@@ -2,6 +2,33 @@
     <model name="x3">
         <pose>0 0 0.053302 0 0 0</pose>
         <link name="X3/base_link">
+        <sensor name="front_lidar" type="gpu_lidar">
+            <pose>0.30 0 0.20 0 0 0</pose>
+            <update_rate>15</update_rate>
+            <topic>/model/drone1/front_lidar/scan</topic>
+            <lidar>
+                <scan>
+                    <horizontal>
+                        <samples>512</samples>
+                        <resolution>1</resolution>
+                        <min_angle>-0.785398</min_angle>   <!-- -45° -->
+                        <max_angle> 0.785398</max_angle>   <!-- +45° -->
+                    </horizontal>
+                    <vertical>
+                        <samples>1</samples>
+                        <resolution>1</resolution>
+                        <min_angle>0.0</min_angle>
+                        <max_angle>0.0</max_angle>
+                    </vertical>
+                </scan>
+                <range>
+                    <min>0.15</min>
+                    <max>60.0</max>
+                    <resolution>0.01</resolution>
+                </range>
+            </lidar>
+        </sensor>
+
             <pose frame="">0 0 0 0 -0 0</pose>
             <inertial>
                 <pose frame="">0 0 0 0 -0 0</pose>

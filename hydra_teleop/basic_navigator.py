@@ -82,8 +82,8 @@ class TargetNavigator:
         target_topic = target_pose_topic or "/model/target_sphere/pose/info"
 
         # Two small nodes (one for each topic) on a shared executor thread
-        self._node_drone = _PoseSub(drone_topic, "hydra_nav_drone_pose")
-        self._node_target = _PoseSub(target_topic, "hydra_nav_target_pose")
+        self._node_drone = _PoseSub(drone_topic, "basic_hydra_nav_drone_pose")
+        self._node_target = _PoseSub(target_topic, "basic_hydra_nav_target_pose")
         self._exec = SingleThreadedExecutor()
         self._exec.add_node(self._node_drone)
         self._exec.add_node(self._node_target)

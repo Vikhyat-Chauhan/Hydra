@@ -22,7 +22,7 @@ class TeleopConfig:
     speed_z: float = 5.0
     yaw_rate: float = 0.8
 
-    # --- Logging (for SimpleLogger) ---
+    # --- Logging ---
     log_to_csv: bool = False          # set False if you only want console output
     log_dir: str = "logs"            # directory for CSVs
     log_name: str = "teleop"         # filename prefix
