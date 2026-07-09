@@ -18,7 +18,13 @@ META_PATH = os.path.join("models", "generated", "generated_nofly_meta.json")
 
 
 def load_rects(meta_path: str) -> List[Tuple[float, float, float, float]]:
-    """Return list of rectangles as (cx, cy, w, h) from meta JSON."""
+    """Return list of rectangles as (cx, cy, w, h) from meta JSON.
+
+    Returns an empty list if the file doesn't exist yet (e.g. before the
+    first arena generation pass has run).
+    """
+    if not os.path.exists(meta_path):
+        return []
     with open(meta_path, "r") as f:
         meta = json.load(f)
     rects = meta.get("rectangles_xywh", [])
@@ -52,6 +58,7 @@ class ViolationMonitor(Node):
         self._logger = logging.getLogger(__name__)
         self._lock = Lock()
 
+        self._meta_path = meta_path
         self._rects = load_rects(meta_path)
         n = len(self._rects)
 
@@ -109,6 +116,30 @@ class ViolationMonitor(Node):
             self._last_pose = (x, y)
 
     # --------------------- Public controls ----------------------
+    def reload_rects(self, meta_path: Optional[str] = None):
+        """
+        Reload the NFZ rectangles from disk (e.g. after a fresh arena generation
+        pass) and reset all visit/violation state to match the new box count.
+        """
+        with self._lock:
+            self._meta_path = meta_path if meta_path is not None else self._meta_path
+            self._rects = load_rects(self._meta_path)
+            n = len(self._rects)
+
+            self._armed = [True] * n
+            self._inside_prev = [False] * n
+            self._violations_per_rect = [0] * n
+            self._total_violations = 0
+
+            self._logger.info(
+                {
+                    "boxes": n,
+                    "mode": "quiet(log on demand)",
+                    "rule": "one_violation_per_visit",
+                },
+                extra={"type": "LOADEDBOXES"},
+            )
+
     def mark_run_start(self, label: str = "run"):
         """
         Reset accumulators and visit-state without logging. Use at the start of a new run.

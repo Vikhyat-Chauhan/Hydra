@@ -250,6 +250,7 @@ def main() -> None:
 
                 # Violation monitor depends on targets/NFZ → generate first
                 arena_gen.run()
+                viol_node.reload_rects()
 
                 print(
                     f"\n=== CANavigator Experiment Run {run_idx} "

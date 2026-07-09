@@ -2,15 +2,17 @@
 from dataclasses import dataclass
 import os
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 @dataclass
 class TeleopConfig:
     # --- Run Options ---
-    simulation_runs = 10
+    simulation_runs = 1
     simulation_timeout = 200
     simulation_world_style = "city" #"perlin|city"
     # --- Sim / world ---
-    world_path: str = "/home/vikhyat/Documents/Hydra/worlds/airport_world.sdf"
-    sim_cmd: tuple[str, ...] = ("gz", "sim", "-r", "-s")
+    world_path: str = os.path.join(PROJECT_ROOT, "worlds", "airport_world.sdf")
+    sim_cmd: tuple[str, ...] = ("gz", "sim", "-r") #, "-s")
     sim_env: dict | None = None
     sim_boot_secs: float = 8.0
     fixed_seed = False
@@ -28,9 +30,17 @@ class TeleopConfig:
 
     def __post_init__(self):
         if self.sim_env is None:
+            models_path = os.path.join(PROJECT_ROOT, "models")
+            existing_resource_path = os.environ.get("GZ_SIM_RESOURCE_PATH", "")
+            resource_path = (
+                f"{models_path}:{existing_resource_path}"
+                if existing_resource_path
+                else models_path
+            )
             self.sim_env = {
                 **os.environ,
                 "__EGL_VENDOR_LIBRARY_FILENAMES": "/usr/share/glvnd/egl_vendor.d/10_nvidia.json",
+                "GZ_SIM_RESOURCE_PATH": resource_path,
             }
 
     # =======================
