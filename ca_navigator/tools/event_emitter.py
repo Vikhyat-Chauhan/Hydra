@@ -22,26 +22,31 @@ class EventCfg:
 
     # ---- Fixed defaults (not meant to be tuned) ----
     topic: str = field(default="/ca_navigator/event", init=False)
-    dt_min_s: float = field(default=0.900, init=False)
-    # Ensures minimum inter-arrival (900ms) > APE1 sleep (523ms) by 183ms,
-    # guaranteeing APE1 resolves before any subsequent event arrives.
-    # Closes the preemptive violation channel for APE1 by construction.
+    # dt_min_s RETUNED alongside deadline_min_s for MCU-scale budgets (see
+    # config.py's deadline-model comment). With deadline = alpha * dt, the
+    # achievable minimum deadline is actually governed by dt_min_s (via
+    # alpha), not by the deadline_min_s clamp alone — the old dt_min_s
+    # (900ms) put the practical deadline floor at alpha*900ms=765ms,
+    # which exceeded the old deadline_min_s clamp (600-700ms) AND today's
+    # much larger APE3 budget headroom question entirely; that clamp was
+    # never actually binding. dt_min_s is now set so alpha*dt_min_s lands
+    # exactly on the new physically-derived deadline_min_s (see config.py),
+    # so the floor is real, not decorative. Still comfortably above
+    # APE1's real budget (~15.9ms) by ~11x, preserving inter-arrival
+    # spacing headroom (though preemption is no longer catastrophic
+    # regardless — the CA selector's salvage path handles it gracefully,
+    # see docs/ca_architecture_deviations.md fix #1).
+    dt_min_s: float = field(default=0.173, init=False)
     dt_max_s: float = field(default=4.0,  init=False)  # log-uniform upper bound
 
     # Deadline model: deadline = clamp(α * Δt, [min, max])
     # Values sourced from TeleopConfig at construction time via from_teleop_cfg().
     # Defaults here match TeleopConfig so a bare EventCfg() is still self-consistent.
-    #
-    # deadline_min = 0.60s: APE1 budget (523ms) < 600ms → APE1 always resolves.
-    # deadline_max = 3.50s: APE3 budget (2035ms) < 3500ms → APE3 resolves on
-    #   long-deadline events (~30% of the distribution).
-    # deadline_alpha = 0.85: deadlines span [600ms, 3500ms] with log-uniform dt
-    #   in [0.900s, 4.0s]. Expected tier split (1M sample simulation):
-    #     APE1 wins (0.52s < d ≤ 1.73s): ~61% of CA resolutions
-    #     APE2 wins (1.73s < d ≤ 2.03s): ~9%  of CA resolutions
-    #     APE3 wins (d > 2.03s):          ~30% of CA resolutions
+    # See config.py for the current physical derivation of deadline_min_s/
+    # deadline_max_s (sudden-obstacle reaction window / far-field horizon) —
+    # not reproduced here to avoid the two drifting out of sync again.
     deadline_alpha: float = field(default=0.85, init=False)
-    deadline_min_s: float = field(default=0.60, init=False)
+    deadline_min_s: float = field(default=0.147, init=False)
     deadline_max_s: float = field(default=3.50, init=False)
     global_deadline_s: Optional[float] = field(default=None, init=False)
 

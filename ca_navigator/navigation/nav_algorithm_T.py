@@ -9,18 +9,21 @@
 #          compute_energy_j: float, events_handled: int, events_violated: int,
 #          events_violated_deadline: int, events_violated_preemptive: int)
 
-import math, threading, time, json
+import math, threading, time, json, struct, ctypes
 from dataclasses import dataclass
 from typing import Optional, Tuple, Set, List, Deque, Dict
 from collections import deque
 from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from geometry_msgs.msg import PoseStamped
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import LaserScan, PointCloud2
 from std_msgs.msg import String
 from ca_navigator.navigation.teleop import GzTeleop
 from ca_navigator.config import TeleopConfig
-from ca_navigator.tools.orin_nx_cycle_model import OrinNxCycleMeter, latency_to_energy_j
+from ca_navigator.tools.orin_nx_cycle_model import (
+    OrinNxCycleMeter, latency_to_energy_j, APE_LATENCY_US, DEADLINE_SCALE,
+)
+from ca_navigator.tools import ape_native
 import logging
 
 # ---------- small math ----------
@@ -51,6 +54,11 @@ class GoToConfig:
 @dataclass
 class AvoidCfg:
     scan_topic: str = "/model/drone1/front_lidar/scan"
+    # Multi-layer point-cloud topic, feeds APE3/VFH only — see _CloudSub.
+    # Mirrors the LiDAR's own /scan/points output (gz.msgs.PointCloudPacked
+    # -> sensor_msgs/PointCloud2 via ros_gz_bridge); must stay in sync with
+    # the bridge mapping in ca_navigator/main.py.
+    cloud_topic: str = "/model/drone1/front_lidar/scan/points"
     safe_m: float = 5.0
     hysteresis_m: float = 1.0
     front_deg: float = 5.0
@@ -103,25 +111,38 @@ class RiskCfg:
     nofly_soft_w: float = 9.0
     curvature_k: float = 0.9
 
+# APE planning budgets (ms), computed live from orin_nx_cycle_model.py so
+# these can never silently drift from the model they're derived from again
+# (a prior drift — hardcoded ms here vs. what the model actually computes —
+# was found and fixed alongside the DEADLINE_SCALE double-counting bug;
+# see docs/gem5_power_study.md §3.1 and the CORRECTED note in
+# orin_nx_cycle_model.py). budget_ms = APE_LATENCY_US[name] * DEADLINE_SCALE
+# / 1000 (the /1000 is a fixed µs->ms unit conversion; DEADLINE_SCALE is
+# the sole interpreter/contention overhead multiplier — see its docstring).
+# APE_LATENCY_US itself is gem5-measured — real in-order-core cycle
+# counts from an ArduPilot-class Cortex-M7 approximation, see
+# gem5_measured_latencies_mcu.py and configs/cortex_m7_inorder.py, of the
+# REAL native Bug/DWA/VFH planners (ca_navigator/native/ape_ops/), not a
+# synthetic op-count proxy and not Cortex-A78/Orin-NX-sourced (that
+# dataset is kept as _GEM5_A78_LATENCY_US for comparison only) — so these
+# budgets reflect real simulated flight-controller-class compute cost,
+# isolated from and fed into this real-time loop only as a static number
+# — see docs/ca_architecture_deviations.md for why gem5 can't run in this
+# loop directly, and for why energy/power accounting (OrinNxCycleMeter,
+# unchanged) still models the Orin NX specifically while these planning
+# budgets now model different hardware.
+_APE1_BUDGET_MS = APE_LATENCY_US["APE1"] * DEADLINE_SCALE / 1000.0
+_APE2_BUDGET_MS = APE_LATENCY_US["APE2"] * DEADLINE_SCALE / 1000.0
+_APE3_BUDGET_MS = APE_LATENCY_US["APE3"] * DEADLINE_SCALE / 1000.0
+
+
 @dataclass
 class EventDecisionCfg:
     event_topic: str = "/ca_navigator/event"
-    # APE planning budgets (ms) — derived from orin_nx_cycle_model.py.
-    # budget_ms = APE_LATENCY_US[name] × DEADLINE_SCALE=1000
-    # (1µs native Cortex-A78AE compute → 1ms effective budget under
-    #  Python interpreter ~100× + system contention ~10× on Orin NX)
     # Each APE thread sleeps for budget_ms at startup to emulate this latency.
-    ape1_budget_ms: int = 523
-    ape2_budget_ms: int = 1343
-    ape3_budget_ms: int = 2035
-
-    # Selector thresholds (ms) — decoupled from budgets so the selection
-    # distribution can be tuned without changing actual compute times.
-    # Invariant: ape2_select_threshold_ms >= ape2_budget_ms (APE2 must finish
-    # before its threshold). ape3_select_threshold_ms >= ape3_budget_ms likewise.
-    # Default: same as budgets (preserves original behavior).
-    ape2_select_threshold_ms: int = 1393   # APE2 budget (1343ms) + 50ms safety margin
-    ape3_select_threshold_ms: int = 2035   # use APE3 when deadline >= this
+    ape1_budget_ms: float = _APE1_BUDGET_MS
+    ape2_budget_ms: float = _APE2_BUDGET_MS
+    ape3_budget_ms: float = _APE3_BUDGET_MS
 
     v_cap_frac: float = 0.75
     selector_mode: str = "CA"
@@ -131,6 +152,38 @@ class EventDecisionCfg:
     sudden_obj_clearance_m: float = 0.3
     sidestep_deg: float = 110.0
     sidestep_speed_frac: float = 0.35
+
+
+@dataclass
+class ApeAlgoCfg:
+    """
+    Tuning parameters for the native APE2/DWA and APE3/VFH planners
+    (ca_navigator/native/ape_ops/), plus the multi-layer LiDAR geometry
+    constants mirrored from models/x3-uav/4/model.sdf's <vertical> block
+    — must stay in sync with that SDF if the sensor is ever retuned.
+
+    None of these values are datasheet facts — they're modeler's choices,
+    empirically tunable against the sim (see ape2_dwa.c/ape3_vfh.c's own
+    docstrings for the algorithm references these implement).
+    """
+    # Multi-layer LiDAR geometry (mirrors model.sdf's <vertical> block)
+    n_layers: int = 5
+    vertical_angle_min: float = -0.0872665   # -5 deg
+    vertical_angle_increment: float = 0.0436332  # (2*5deg)/(n_layers-1)
+
+    # APE2 / Dynamic Window Approach
+    dwa_n_v: int = 5
+    dwa_n_w: int = 7
+    dwa_dt: float = 0.3
+    dwa_horizon_s: float = 1.5
+    dwa_w_clear: float = 0.4
+    dwa_w_heading: float = 0.4
+    dwa_w_speed: float = 0.2
+
+    # APE3 / Vector Field Histogram
+    vfh_n_sectors: int = 36
+    vfh_threshold: float = 0.3
+    vfh_smax_sectors: float = 6.0
 
 
 # ---- internal subscribers ----
@@ -201,6 +254,68 @@ class _ScanSub(Node):
             if lo > hi: lo, hi = hi, lo
         return [r for r in msg.ranges[lo:hi+1] if math.isfinite(r) and r > 0.0]
 
+
+class _CloudSub(Node):
+    """
+    Subscribes to the LiDAR's multi-layer point-cloud topic
+    (sensor_msgs/PointCloud2) — feeds APE3/VFH only, which is the one
+    planner that uses more than the horizontal plane. APE1/APE2 and the
+    base avoidance path keep using the single-layer LaserScan
+    (_ScanSub) unchanged.
+
+    Multi-layer data can't go through the LaserScan topic: that message
+    type has no vertical dimension at all, and ros_gz_bridge's LaserScan
+    converter was confirmed (empirically, before building this) to
+    silently truncate a multi-layer gz.msgs.LaserScan down to one layer
+    with no warning — see docs/ca_architecture_deviations.md.
+
+    Assumes an ORGANIZED cloud (height=n_layers, width=n_ranges,
+    row-major, matching the LiDAR's own horizontal/vertical sample grid
+    — confirmed against this project's actual bridge output) with
+    float32 x/y/z as the first three point fields at byte offsets
+    0/4/8. This is checked at parse time (not silently assumed): a
+    message with a different field layout is dropped rather than
+    misread.
+    """
+    def __init__(self, topic: str, *, callback_group=None):
+        super().__init__("can_nav_lidar_cloud")
+        self._lock = threading.Lock()
+        self._ranges: List[float] = []
+        self._n_ranges = 0
+        self._n_layers = 0
+        self._t_last = 0.0
+        cbg = callback_group or ReentrantCallbackGroup()
+        self.create_subscription(PointCloud2, topic, self._cb, 10, callback_group=cbg)
+
+    def _cb(self, msg: PointCloud2):
+        offsets = {f.name: f.offset for f in msg.fields}
+        if offsets.get("x") != 0 or offsets.get("y") != 4 or offsets.get("z") != 8:
+            return  # layout assumption violated — don't silently misread bytes
+        n_layers, n_ranges, step = msg.height, msg.width, msg.point_step
+        if n_layers <= 0 or n_ranges <= 0 or step < 12:
+            return
+        fmt = f"<3f{step - 12}x"
+        raw = bytes(msg.data)
+        if len(raw) != n_layers * n_ranges * step:
+            return  # padded/non-organized layout — don't silently misread
+        ranges: List[float] = [0.0] * (n_layers * n_ranges)
+        try:
+            for i, (x, y, z) in enumerate(struct.iter_unpack(fmt, raw)):
+                d = math.sqrt(x * x + y * y + z * z)
+                ranges[i] = d if math.isfinite(d) and d > 0.0 else 0.0
+        except struct.error:
+            return
+        with self._lock:
+            self._ranges = ranges
+            self._n_ranges = n_ranges
+            self._n_layers = n_layers
+            self._t_last = self.get_clock().now().nanoseconds * 1e-9
+
+    def latest(self) -> Tuple[List[float], int, int, float]:
+        with self._lock:
+            return self._ranges, self._n_ranges, self._n_layers, self._t_last
+
+
 class _EventSub(Node):
     """Subscribe to /ca_navigator/event (std_msgs/String with JSON payload)."""
     def __init__(self, topic: str, *, callback_group=None):
@@ -236,18 +351,22 @@ class _EventSub(Node):
 class LidarTargetNavigatorCA:
     """
     Default navigator. When an event arrives, APE1/APE2/APE3 workers run in
-    parallel; the selector picks the highest-quality plan that can finish before
-    the deadline. The winner is determined at event intake from the deadline alone
-    — APE budgets are fixed constants, so no per-tick re-evaluation is needed.
+    parallel; the selector reads out the highest-quality plan that has
+    actually finished by the deadline (opportunistic, not predicted — see
+    _evt_cascade_order()).
     """
 
     # ------------------------------------------------------------------
-    # CA selection table (all values in seconds)
+    # CA selection: opportunistic best-available, not predicted at intake.
     #
-    #   deadline >= ape3_budget_s  →  wait for APE3  (best quality)
-    #   deadline >= ape2_budget_s  →  wait for APE2
-    #   deadline >= ape1_budget_s  →  wait for APE1  (fastest)
-    #   deadline <  ape1_budget_s  →  DEADLINE_MISS  (no APE can finish)
+    #   All three APE threads run to completion (or deadline) independently.
+    #   As soon as APE3 (best quality) posts, take it — nothing better can
+    #   arrive. Otherwise keep waiting for a better answer until the
+    #   deadline, then take whichever of APE2/APE1 is ready. Only a true
+    #   DEADLINE_MISS (nothing ready at all when time runs out) is a
+    #   violation. See docs/ca_architecture_deviations.md — this replaces
+    #   the prior deadline->tier lookup, which picked a winner before any
+    #   APE had run (a logical resolution, not a physical one).
     # ------------------------------------------------------------------
 
     def __init__(self,
@@ -261,8 +380,7 @@ class LidarTargetNavigatorCA:
                  crumb_cfg: Optional[BreadcrumbCfg] = None,
                  safety_cfg: Optional[SafetyCfg] = None,
                  risk_cfg: Optional[RiskCfg] = None,
-                 ape2_select_threshold_ms: Optional[int] = None,
-                 ape3_select_threshold_ms: Optional[int] = None):
+                 algo_cfg: Optional[ApeAlgoCfg] = None):
         self._teleop = teleop
         self._cfg = cfg
         self._gc = goto_cfg or GoToConfig()
@@ -270,6 +388,7 @@ class LidarTargetNavigatorCA:
         self._bc = crumb_cfg or BreadcrumbCfg()
         self._sc = safety_cfg or SafetyCfg()
         self._rc = risk_cfg or RiskCfg()
+        self._algo = algo_cfg or ApeAlgoCfg()
         self._logger = logging.getLogger(__name__)
         self._logger.propagate = True
         self._cycle_meter = OrinNxCycleMeter()
@@ -286,6 +405,7 @@ class LidarTargetNavigatorCA:
         self._node_drone  = _PoseSub(drone_topic, "can_nav_drone_pose", callback_group=self._cbg)
         self._node_target = _PoseSub(target_pose_topic, "can_nav_target_pose", callback_group=self._cbg)
         self._node_scan   = _ScanSub(self._ac.scan_topic, callback_group=self._cbg)
+        self._node_cloud  = _CloudSub(self._ac.cloud_topic, callback_group=self._cbg)
 
         self._edc = EventDecisionCfg()
         try:
@@ -294,15 +414,10 @@ class LidarTargetNavigatorCA:
                 self._edc.selector_mode = str(sm).upper().strip()
         except Exception:
             pass
-        if ape2_select_threshold_ms is not None:
-            self._edc.ape2_select_threshold_ms = ape2_select_threshold_ms
-        if ape3_select_threshold_ms is not None:
-            self._edc.ape3_select_threshold_ms = ape3_select_threshold_ms
 
         self._log("CFG",
                   type="CFG",
                   ape_budgets_ms=[self._edc.ape1_budget_ms, self._edc.ape2_budget_ms, self._edc.ape3_budget_ms],
-                  ape_select_thresholds_ms=[self._edc.ape1_budget_ms, self._edc.ape2_select_threshold_ms, self._edc.ape3_select_threshold_ms],
                   v_cap_frac=self._edc.v_cap_frac,
                   selector_mode=self._edc.selector_mode,
                   commit_hold_s=self._edc.commit_hold_s,
@@ -314,7 +429,7 @@ class LidarTargetNavigatorCA:
         self._node_evt = _EventSub(getattr(cfg, "event_topic", self._edc.event_topic), callback_group=self._cbg)
 
         self._executor = None
-        self._nodes = (self._node_drone, self._node_target, self._node_scan, self._node_evt)
+        self._nodes = (self._node_drone, self._node_target, self._node_scan, self._node_cloud, self._node_evt)
 
         self._avoiding = False
         self._avoid_sign = 0
@@ -340,9 +455,6 @@ class LidarTargetNavigatorCA:
 
         self._evt_active: bool = False
         self._evt_resolved: bool = False
-
-        # Winner APE name decided at intake, not per-tick.
-        self._evt_winner: str = "APE1"
 
         self._resolved_cmd: tuple = (0.0, 0.0, 0.0)
         self._evt_resolved_at: float = 0.0
@@ -454,22 +566,6 @@ class LidarTargetNavigatorCA:
         if not math.isfinite(skew):  skew = 0.0
         return width, skew
 
-    def _confidence_from_scan(self, scan: Optional[LaserScan], yaw_err: float) -> float:
-        if scan is None:
-            return 0.0
-        fwd_vals = _ScanSub._window_vals(scan, 0.0, max(5.0, self._ac.front_deg))
-        dmin = min(fwd_vals) if fwd_vals else float('inf')
-        dmin_n = max(0.0, min(1.0, (dmin - 4.0) / 16.0))
-        w, _ = self._gap_metrics(scan)
-        w_n = 0.0 if not math.isfinite(w) else max(0.0, min(1.0, (w - 3.0) / 12.0))
-        yaw_n = 1.0 - max(0.0, min(1.0, abs(yaw_err) / math.radians(40.0)))
-        cL = self._arc_is_clear(scan, -15.0, 4.0)
-        cC = self._arc_is_clear(scan,   0.0, 4.0)
-        cR = self._arc_is_clear(scan, +15.0, 4.0)
-        cons_n = ((1.0 if cL else 0.0) + (1.0 if cC else 0.0) + (1.0 if cR else 0.0)) / 3.0
-        conf = 0.35*dmin_n + 0.30*w_n + 0.25*yaw_n + 0.10*cons_n
-        return max(0.0, min(1.0, conf))
-
     # ---------- No-fly helpers ----------
     def _nofly_rects(self):
         return getattr(self._cfg, "nofly_rects_xywh", None) or []
@@ -536,84 +632,148 @@ class LidarTargetNavigatorCA:
         with self._evt_lock:
             self._evt_proposals[name] = {"v": v, "wz": wz, "vz": vz, "score": score, "ready_t": self._sim_time()}
 
-    def _shared_motion_caps(self, base_v: float, yaw_goal_rad: float, base_vz: float,
-                            scan: Optional[LaserScan],
-                            v_cap_frac_override: Optional[float] = None,
-                            curvature_k_scale: float = 1.0):
-        wz = max(-self._gc.max_wz, min(self._gc.max_wz, self._gc.kp_yaw * _wrap_pi(yaw_goal_rad)))
-        dmin = float('inf')
+    def _build_ape_params(self, snap, multilayer: bool) -> ape_native.ApeParams:
+        """
+        Marshals the raw scan + scalar nav state + relevant config into
+        the native planner's parameter struct. This is Python's entire
+        remaining role in the APE decision path — no algorithm logic
+        here, just data marshaling up to the ctypes boundary (see
+        ape_native.py; the real Bug/DWA/VFH logic lives in
+        ca_navigator/native/ape_ops/).
+
+        multilayer=False (APE1/APE2): single horizontal-plane LaserScan
+        (snap["scan"]), matching the base avoidance path's own sensor
+        view. multilayer=True (APE3): the multi-layer point-cloud-derived
+        range array (snap["cloud"]) — falls back to a single-layer view
+        from the same LaserScan if cloud data hasn't arrived yet, rather
+        than crashing on an empty buffer.
+        """
+        scan = snap["scan"]
+        p = ape_native.ApeParams()
+
+        if multilayer:
+            cloud_ranges, cloud_n_ranges, cloud_n_layers, _ = snap["cloud"]
+            if cloud_ranges and cloud_n_ranges > 0 and cloud_n_layers > 0:
+                flat, n_ranges, n_layers = cloud_ranges, cloud_n_ranges, cloud_n_layers
+            elif scan is not None and scan.ranges:
+                flat, n_ranges, n_layers = list(scan.ranges), len(scan.ranges), 1
+            else:
+                flat, n_ranges, n_layers = [0.0], 1, 1
+        elif scan is not None and scan.ranges:
+            flat, n_ranges, n_layers = list(scan.ranges), len(scan.ranges), 1
+        else:
+            flat, n_ranges, n_layers = [0.0], 1, 1
+
+        # ranges must outlive p (POINTER doesn't keep the buffer alive) —
+        # stash it as a plain attribute so it isn't garbage-collected
+        # while the native call still holds the pointer.
+        arr = (ctypes.c_float * len(flat))(*flat)
+        p._ranges_keepalive = arr
+        p.ranges = ctypes.cast(arr, ctypes.POINTER(ctypes.c_float))
+        p.n_ranges = n_ranges
+        p.n_layers = n_layers
+
         if scan is not None:
-            window = _ScanSub._window_vals(scan, 0.0, max(5.0, self._ac.front_deg))
-            dmin = min(window) if window else float('inf')
-        curv_k = max(0.05, float(self._rc.curvature_k) * float(curvature_k_scale))
-        curv_cap = self._gc.max_v / (1.0 + curv_k * abs(wz))
-        v_event_cap = (v_cap_frac_override if v_cap_frac_override is not None else self._edc.v_cap_frac) * self._gc.max_v
-        v = min(base_v, v_event_cap, curv_cap)
-        v = self._stopping_limited_speed(v, dmin)
-        return v, wz, base_vz, dmin
+            p.angle_min = float(scan.angle_min)
+            p.angle_increment = float(scan.angle_increment)
+            p.range_min = float(scan.range_min)
+            p.range_max = float(scan.range_max)
+        else:
+            p.angle_min = -math.pi
+            p.angle_increment = 2.0 * math.pi / max(1, n_ranges)
+            p.range_min = 0.05
+            p.range_max = 60.0
+
+        p.vertical_angle_min = self._algo.vertical_angle_min
+        p.vertical_angle_increment = self._algo.vertical_angle_increment
+
+        p.v_cmd = float(snap["v_cmd"])
+        p.yaw_err = float(snap["yaw_err"])
+
+        p.max_v = self._gc.max_v
+        p.max_wz = self._gc.max_wz
+        p.max_vz = self._gc.max_vz
+        p.kp_yaw = self._gc.kp_yaw
+        p.vehicle_radius_m = self._rc.vehicle_radius_m
+        p.max_decel_mps2 = self._rc.max_decel_mps2
+        p.stop_margin_m = self._rc.stop_margin_m
+        p.safe_m = self._ac.safe_m
+        p.front_deg = self._ac.front_deg
+        p.side_deg = self._ac.side_deg
+        p.v_cap_frac = self._edc.v_cap_frac
+        p.sidestep_deg = self._edc.sidestep_deg
+        p.sidestep_speed_frac = self._edc.sidestep_speed_frac
+        p.sudden_obj_radius_m = self._edc.sudden_obj_radius_m
+        p.sudden_obj_clearance_m = self._edc.sudden_obj_clearance_m
+        p.curvature_k = self._rc.curvature_k
+
+        p.dwa_n_v = self._algo.dwa_n_v
+        p.dwa_n_w = self._algo.dwa_n_w
+        p.dwa_dt = self._algo.dwa_dt
+        p.dwa_horizon_s = self._algo.dwa_horizon_s
+        p.dwa_w_clear = self._algo.dwa_w_clear
+        p.dwa_w_heading = self._algo.dwa_w_heading
+        p.dwa_w_speed = self._algo.dwa_w_speed
+
+        p.vfh_n_sectors = self._algo.vfh_n_sectors
+        p.vfh_threshold = self._algo.vfh_threshold
+        p.vfh_smax_sectors = self._algo.vfh_smax_sectors
+
+        return p
+
+    def _evt_native_plan_and_topup(self, plan_fn, params: ape_native.ApeParams, budget_ms: float):
+        """
+        Calls the real native planner (genuine compute, releases the
+        GIL — see ape_native.py — so this genuinely runs in parallel
+        with the other APE threads across real cores), then tops up
+        with a sleep to reach the nominal gem5-derived budget_ms. Real
+        host execution is typically much faster than that nominal
+        figure (a real MCU-class target), so the top-up sleep does most
+        of the wall-clock work in practice — the native call is what
+        makes the compute genuine and gives real parallelism, not the
+        sleep.
+        """
+        t0 = time.perf_counter()
+        result = plan_fn(params)
+        elapsed_s = time.perf_counter() - t0
+        time.sleep(max(0.0, budget_ms / 1000.0 - elapsed_s))
+        return result
 
     def _evt_plan_ape1(self, snap, budget_ms):
-        time.sleep(budget_ms / 1000.0)
-        v_cmd, scan = snap["v_cmd"], snap["scan"]
-        target_off = math.radians(110.0)
-        slow_frac = 0.05
-        base_v = min(v_cmd, slow_frac * self._gc.max_v)
-        v_cap_local = 0.3 * self._edc.v_cap_frac
-        v, wz, vz, _ = self._shared_motion_caps(base_v, target_off, 0.0, scan,
-                                                  v_cap_frac_override=v_cap_local)
-        return self._evt_put("APE1", v, wz, vz, score=-1e6)
+        params = self._build_ape_params(snap, multilayer=False)
+        r = self._evt_native_plan_and_topup(ape_native.plan_ape1, params, budget_ms)
+        return self._evt_put("APE1", r.v, r.wz, r.vz, r.score)
 
     def _evt_plan_ape2(self, snap, budget_ms):
-        time.sleep(budget_ms / 1000.0)
-        v_cmd, scan = snap["v_cmd"], snap["scan"]
-        pick_left = (self._side_bias > 0)
-        target_off = math.radians(self._edc.sidestep_deg) * (+1 if pick_left else -1)
-        base_v = min(v_cmd, self._edc.sidestep_speed_frac * self._gc.max_v)
-        v, wz, vz, _ = self._shared_motion_caps(base_v, target_off, 0.0, scan)
-        score = -0.2 * abs(wz)
-        return self._evt_put("APE2", v, wz, vz, score)
+        params = self._build_ape_params(snap, multilayer=False)
+        r = self._evt_native_plan_and_topup(ape_native.plan_ape2, params, budget_ms)
+        return self._evt_put("APE2", r.v, r.wz, r.vz, r.score)
 
     def _evt_plan_ape3(self, snap, budget_ms):
-        time.sleep(budget_ms / 1000.0)
-        v_cmd, scan = snap["v_cmd"], snap["scan"]
-        yaw_err = snap["yaw_err"]
-        conf = self._confidence_from_scan(scan, yaw_err)
-        ds = (self._edc.sudden_obj_radius_m + self._rc.vehicle_radius_m + self._edc.sudden_obj_clearance_m)
-        pick_left = (self._side_bias > 0)
-        target_off = math.radians(self._edc.sidestep_deg) * (+1 if pick_left else -1)
-        sidestep_speed_frac_eff = min(0.95, self._edc.sidestep_speed_frac + 0.2 * conf)
-        base_v = min(v_cmd, sidestep_speed_frac_eff * self._gc.max_v)
-        vcap = min(0.95, self._edc.v_cap_frac + 0.2 * conf)
-        curv_scale = (1.0 - 0.4 * conf)
-        v, wz, vz, _ = self._shared_motion_caps(base_v, target_off, 0.0, scan,
-                                                  v_cap_frac_override=vcap,
-                                                  curvature_k_scale=curv_scale)
-        score = +0.12 * ds - 0.04 * abs(wz) + 0.02 * v
-        return self._evt_put("APE3", v, wz, vz, score)
+        params = self._build_ape_params(snap, multilayer=True)
+        r = self._evt_native_plan_and_topup(ape_native.plan_ape3, params, budget_ms)
+        return self._evt_put("APE3", r.v, r.wz, r.vz, r.score)
 
     # ---------- event helpers ----------
-    def _evt_winner_for_deadline(self, deadline_s: float) -> str:
+    def _evt_deadline_feasible(self, deadline_s: float) -> bool:
         """
-        Determine which APE to wait for, purely from the deadline.
+        Admissibility check only — NOT a winner prediction.
 
-        APE budgets are fixed constants — all three threads launch at t=0
-        and post their proposals at t=ape_budget_s. The highest-quality APE
-        that can post before the deadline is the winner. No per-tick logic needed.
-
-        Returns "APE3", "APE2", "APE1", or "MISS" (no APE can finish in time).
+        Even the fastest APE (APE1) has a fixed lower-bound compute time
+        (ape1_budget_ms). If the deadline is shorter than that, no APE can
+        possibly answer in time, so there's no point starting the threads.
+        This does not decide which of APE1/2/3 will be used — that's
+        resolved opportunistically in the main loop from whichever
+        proposals are actually ready when the deadline arrives (see
+        _evt_cascade_order() and the "Event window" block in go_to()).
         """
-        ape3_s = self._edc.ape3_select_threshold_ms / 1000.0
-        ape2_s = self._edc.ape2_select_threshold_ms / 1000.0
-        ape1_s = self._edc.ape1_budget_ms / 1000.0   # hard lower bound — APE1 cannot go lower
+        return deadline_s >= (self._edc.ape1_budget_ms / 1000.0)
 
-        if deadline_s >= ape3_s:
-            return "APE3"
-        elif deadline_s >= ape2_s:
-            return "APE2"
-        elif deadline_s >= ape1_s:
-            return "APE1"
-        else:
-            return "MISS"
+    def _evt_cascade_order(self) -> List[str]:
+        """Preference order to read proposals in: best quality first."""
+        if self._edc.selector_mode == "CA":
+            return ["APE3", "APE2", "APE1"]
+        return [self._edc.selector_mode]
 
     def _evt_violate(self, reason: str = "miss"):
         if self._pending_evt is None:
@@ -635,10 +795,17 @@ class LidarTargetNavigatorCA:
         self._evt_deadline_at = 0.0
         self._evt_active = False
         self._evt_resolved = False
-        self._evt_winner = "APE1"
 
     # ---------- APE calibration ----------
     def _calibrate_budgets(self, n_reps: int = 30) -> None:
+        """
+        Measures real wall-clock time for each _evt_plan_apeN() call with
+        budget_ms=0 (no top-up sleep). This is a real measurement of the
+        actual native Bug/DWA/VFH planner call (ape_native.py, via
+        _evt_native_plan_and_topup) plus the Python-side param marshaling
+        around it — not interpreter overhead alone, and not a synthetic
+        cost proxy separate from the real decision logic.
+        """
         import statistics
         from sensor_msgs.msg import LaserScan as _LS
         _scan = _LS()
@@ -652,6 +819,7 @@ class LidarTargetNavigatorCA:
             "v_cmd": 10.0,
             "scan": _scan,
             "yaw_err": 0.1,
+            "cloud": ([], 0, 0, 0.0),  # empty — _build_ape_params falls back to _scan for APE3
         }
         results = {}
         for name, fn in [("APE1", self._evt_plan_ape1),
@@ -767,16 +935,14 @@ class LidarTargetNavigatorCA:
                           deadline_computed=evt["t_recv"] + deadline_s)
                 self._events_handled += 1
 
-                # Salvage old active event before replacing it
+                # Salvage old active event before replacing it — take the
+                # best-available proposal that's actually ready, cascading
+                # down by quality (opportunistic, same rule as the main
+                # resolution path below).
                 if self._evt_active:
                     with self._evt_lock:
                         ready_curr = dict(self._evt_proposals)
-                    # Try winner first, then cascade down
-                    salvage_order = {"APE3": ["APE3", "APE2", "APE1"],
-                                     "APE2": ["APE2", "APE1"],
-                                     "APE1": ["APE1"]}.get(self._evt_winner, ["APE1"])
-                    if self._edc.selector_mode != "CA":
-                        salvage_order = [self._edc.selector_mode]
+                    salvage_order = self._evt_cascade_order()
                     chosen_curr = next(
                         ((n, ready_curr[n]) for n in salvage_order if n in ready_curr),
                         None
@@ -792,13 +958,16 @@ class LidarTargetNavigatorCA:
                         self._log("EVENT", type="PREEMPTIVE", c_time=self._sim_time())
                         self._evt_clear()
 
-                # Determine winner APE for this event at intake time
+                # Admissibility check only: is the deadline even reachable
+                # by the fastest APE? Which APE actually wins is resolved
+                # opportunistically later, from whichever proposals are
+                # ready — not predicted here.
                 if self._edc.selector_mode == "CA":
-                    winner = self._evt_winner_for_deadline(deadline_s)
+                    feasible = self._evt_deadline_feasible(deadline_s)
                 else:
-                    winner = self._edc.selector_mode  # forced single-APE mode
+                    feasible = True  # forced single-APE mode always attempts
 
-                if winner == "MISS":
+                if not feasible:
                     # No APE can finish in time — count as deadline violation immediately
                     self._events_violated += 1
                     self._events_violated_deadline += 1
@@ -812,7 +981,6 @@ class LidarTargetNavigatorCA:
                     self._evt_deadline_at = evt["t_recv"] + deadline_s
                     self._evt_active = True
                     self._evt_resolved = False
-                    self._evt_winner = winner
 
                     with self._evt_lock:
                         self._evt_proposals = {}
@@ -825,6 +993,7 @@ class LidarTargetNavigatorCA:
                         "v_cmd": v_cmd,
                         "scan": scan,
                         "yaw_err": _wrap_pi(math.atan2(ey, ex) - yaw),
+                        "cloud": self._node_cloud.latest(),
                     }
 
                     mode = self._edc.selector_mode
@@ -887,26 +1056,29 @@ class LidarTargetNavigatorCA:
                 effective_safe_m = max(effective_safe_m, self._rc.nofly_min_dist_m)
                 v_cmd = min(v_cmd, 0.4 * self._gc.max_v)
 
-            # ---------- Event window — simplified selector ----------
+            # ---------- Event window — opportunistic best-available selector ----------
+            # Read out whichever APEs have actually completed, not a
+            # precommitted prediction. Take the best-quality proposal the
+            # instant it's ready (nothing better can still arrive); short
+            # of that, keep waiting for a better answer until the deadline,
+            # then take whatever's ready. Only declare DEADLINE when
+            # nothing at all is ready once time runs out.
             if event_active:
                 tl = _evt_time_left()
-                if tl <= 0.0:
-                    self._evt_violate("DEADLINE")
-                    self._log("EVENT", type="DEADLINE", c_time=self._sim_time())
-                    self._evt_clear()
-                else:
-                    with self._evt_lock:
-                        ready = dict(self._evt_proposals)
+                with self._evt_lock:
+                    ready = dict(self._evt_proposals)
 
-                    # self._evt_winner was fixed at intake. Just wait for it.
-                    # No fallback logic: if it hasn't posted yet, keep waiting.
-                    # If it has posted, take it immediately.
-                    chosen = None
-                    if self._evt_winner in ready:
-                        chosen = (self._evt_winner, ready[self._evt_winner])
+                cascade = self._evt_cascade_order()
+                best_ready = next(((n, ready[n]) for n in cascade if n in ready), None)
+                best_possible_ready = (best_ready is not None and best_ready[0] == cascade[0])
 
-                    if chosen is not None:
-                        winner_name, prop = chosen
+                if best_possible_ready or tl <= 0.0:
+                    if best_ready is None:
+                        self._evt_violate("DEADLINE")
+                        self._log("EVENT", type="DEADLINE", c_time=self._sim_time())
+                        self._evt_clear()
+                    else:
+                        winner_name, prop = best_ready
                         v_cmd, wz_cmd, vz_cmd = prop["v"], prop["wz"], prop["vz"]
                         if not self._evt_resolved:
                             self._log("EVENT", type="RESOLVED",

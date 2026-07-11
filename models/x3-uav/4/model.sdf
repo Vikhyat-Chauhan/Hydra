@@ -15,10 +15,10 @@
                         <max_angle> 2.35619</max_angle>   <!-- +135° (≈270° total) -->
                     </horizontal>
                     <vertical>
-                        <samples>1</samples>
+                        <samples>5</samples>           <!-- 1 → 5: diagnostic for multi-layer APE3/VFH input -->
                         <resolution>1</resolution>
-                        <min_angle>0.0</min_angle>
-                        <max_angle>0.0</max_angle>
+                        <min_angle>-0.0872665</min_angle>   <!-- -5° -->
+                        <max_angle> 0.0872665</max_angle>   <!-- +5° -->
                     </vertical>
                 </scan>
                 <range>

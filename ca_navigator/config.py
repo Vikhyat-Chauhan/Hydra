@@ -12,7 +12,7 @@ class TeleopConfig:
     simulation_world_style = "city" #"perlin|city"
     # --- Sim / world ---
     world_path: str = os.path.join(PROJECT_ROOT, "worlds", "airport_world.sdf")
-    sim_cmd: tuple[str, ...] = ("gz", "sim", "-r") #, "-s")
+    sim_cmd: tuple[str, ...] = ("gz", "sim", "-r")#, "-s")
     sim_env: dict | None = None
     sim_boot_secs: float = 8.0
     fixed_seed = False
@@ -93,18 +93,28 @@ class TeleopConfig:
     # Propagated into EventCfg via EventCfg.from_teleop_cfg().
     # Must stay consistent with EventDecisionCfg thresholds in nav_algorithm_T.py.
     #
-    # Values derived from APE_LATENCY_US × DEADLINE_SCALE=1000:
-    #   APE1 budget: 523ms  — APE1_sleep (523ms) < deadline_min (600ms) → 0% violations
-    #   APE2 budget: 1343ms — APE2_sleep (1343ms) within [600ms, 3500ms] → ~61% violations
-    #   APE3 budget: 2035ms — APE3_sleep (2035ms) within [600ms, 3500ms] → ~70% violations
-    #   CA: always falls back to APE1 → 0% violations, APE2/3 quality on ~39% of events
+    # RETUNED for MCU-scale budgets (APE1≈15.9ms / APE2≈16.8ms / APE3≈58.6ms,
+    # ca_navigator/tools/orin_nx_cycle_model.py APE_LATENCY_US). The old
+    # 600-700ms floor was tuned against pre-gem5-MCU budgets three orders
+    # of magnitude smaller than today's; with it, CA always had time to
+    # wait for APE3, so the speed/accuracy tradeoff never engaged (see
+    # docs/ca_architecture_deviations.md — confirmed empirically: 11/11 CA
+    # resolutions picked APE3 in a real run under the old floor).
     #
-    # Physical grounding at v_max=15m/s:
-    #   deadline_min=600ms → 9m   (obstacle at LiDAR safe_m boundary)
-    #   deadline_max=3500ms → 52m (far-field threat, ample replanning horizon)
+    # Physical grounding — sudden-obstacle reaction window (the tightest
+    # real scenario the sim models), not the general LiDAR-safe-boundary
+    # case used before:
+    #   deadline_min = (sudden_obj_radius_m + vehicle_radius_m +
+    #                    sudden_obj_clearance_m) / v_max
+    #                = (1.2 + 0.7 + 0.3) / 15.0 = 2.2m / 15m/s ≈ 0.147s
+    #   (sudden_obj_radius_m/vehicle_radius_m/sudden_obj_clearance_m are
+    #   EventDecisionCfg/RiskCfg defaults in nav_algorithm_T.py; v_max is
+    #   GoToConfig.max_v.)
+    #   deadline_max = 3500ms → 52m (far-field threat, unchanged — still a
+    #   reasonable long-horizon replanning window, not tied to APE budgets)
     # -----------------------
     deadline_alpha: float = 0.85
-    deadline_min_s: float = 0.70
+    deadline_min_s: float = 0.147
     deadline_max_s: float = 3.50
     # -----------------------
     # Physics
