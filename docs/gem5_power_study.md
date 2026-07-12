@@ -19,8 +19,8 @@
 
 ### 1.1 Why this exists
 
-`docs/compute_power_model.md` documents CANavigator's two-layer compute
-power model: `OrinNxCycleMeter` (Layer 1) assigns each APE a static
+CANavigator's original two-layer compute power model (now superseded, see
+banner above): `OrinNxCycleMeter` (Layer 1) assigned each APE a static
 per-invocation latency in microseconds, built by summing a hand-authored
 table of per-operation costs (`ca_navigator/tools/orin_nx_cycle_model.py`,
 the `_L` dict); `latency_to_energy_j()` (Layer 2) converts that latency into
@@ -181,8 +181,7 @@ sourced values, rather than presenting estimates as fact.
   L2 size is explicitly commented as a modeler's estimate: NVIDIA does not
   publish per-core Orin NX cache sizes.
 - **`se_run.py`** — assembles the gem5 `System`: 2.0 GHz clock (from the
-  Jetson Orin NX datasheet, DS-10662-001, already cited in
-  `compute_power_model.md`), `LPDDR5_5500_1x16_BG_BL32` DRAM model
+  Jetson Orin NX datasheet, DS-10662-001), `LPDDR5_5500_1x16_BG_BL32` DRAM model
   (matches Orin NX's real memory type), wires CPU → L1 → L2 bus → L2 →
   membus → DRAM, and loads `ape_bench` as an SE-mode `Process` with
   `argv = [profile, iterations]`.
@@ -380,11 +379,9 @@ gap lands almost exactly on that same factor, suggesting the `_L` table's
 before `DEADLINE_SCALE` is applied on top — a real, independently
 reportable bug candidate, not just noise.
 
-A second, smaller issue found in passing: `docs/compute_power_model.md`'s
-published table (540/1729/3004 µs; shared = 233.64 µs) does not match what
-`orin_nx_cycle_model.py` computes today (523.48/1342.55/2034.81 µs;
-shared = 511.10 µs) — the docs appear stale relative to the code,
-independent of anything gem5-related.
+(A stale doc table describing this same synthetic model was found and
+removed in the same cleanup that superseded this section — see the banner
+at the top of this document.)
 
 ### 3.2 Relative cost shape: the model assumes serial cost; hardware pipelines
 

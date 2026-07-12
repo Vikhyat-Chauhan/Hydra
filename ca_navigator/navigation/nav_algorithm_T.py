@@ -111,26 +111,12 @@ class RiskCfg:
     nofly_soft_w: float = 9.0
     curvature_k: float = 0.9
 
-# APE planning budgets (ms), computed live from orin_nx_cycle_model.py so
-# these can never silently drift from the model they're derived from again
-# (a prior drift — hardcoded ms here vs. what the model actually computes —
-# was found and fixed alongside the DEADLINE_SCALE double-counting bug;
-# see docs/gem5_power_study.md §3.1 and the CORRECTED note in
-# orin_nx_cycle_model.py). budget_ms = APE_LATENCY_US[name] * DEADLINE_SCALE
-# / 1000 (the /1000 is a fixed µs->ms unit conversion; DEADLINE_SCALE is
-# the sole interpreter/contention overhead multiplier — see its docstring).
-# APE_LATENCY_US itself is gem5-measured — real in-order-core cycle
-# counts from an ArduPilot-class Cortex-M7 approximation, see
-# gem5_measured_latencies_mcu.py and configs/cortex_m7_inorder.py, of the
-# REAL native Bug/DWA/VFH planners (ca_navigator/native/ape_ops/), not a
-# synthetic op-count proxy and not Cortex-A78/Orin-NX-sourced (that
-# dataset is kept as _GEM5_A78_LATENCY_US for comparison only) — so these
-# budgets reflect real simulated flight-controller-class compute cost,
-# isolated from and fed into this real-time loop only as a static number
-# — see docs/ca_architecture_deviations.md for why gem5 can't run in this
-# loop directly, and for why energy/power accounting (OrinNxCycleMeter,
-# unchanged) still models the Orin NX specifically while these planning
-# budgets now model different hardware.
+# APE planning budgets (ms), computed live from orin_nx_cycle_model.py's
+# gem5-measured APE_LATENCY_US (Cortex-M7-approximation) so they can never
+# drift from the model they're derived from. See docs/gem5_power_study.md
+# §3.1 for the drift bug this fixes and docs/ca_architecture_deviations.md
+# for why planning-timing and energy-accounting (OrinNxCycleMeter) model
+# different hardware.
 _APE1_BUDGET_MS = APE_LATENCY_US["APE1"] * DEADLINE_SCALE / 1000.0
 _APE2_BUDGET_MS = APE_LATENCY_US["APE2"] * DEADLINE_SCALE / 1000.0
 _APE3_BUDGET_MS = APE_LATENCY_US["APE3"] * DEADLINE_SCALE / 1000.0
@@ -356,18 +342,9 @@ class LidarTargetNavigatorCA:
     _evt_cascade_order()).
     """
 
-    # ------------------------------------------------------------------
     # CA selection: opportunistic best-available, not predicted at intake.
-    #
-    #   All three APE threads run to completion (or deadline) independently.
-    #   As soon as APE3 (best quality) posts, take it — nothing better can
-    #   arrive. Otherwise keep waiting for a better answer until the
-    #   deadline, then take whichever of APE2/APE1 is ready. Only a true
-    #   DEADLINE_MISS (nothing ready at all when time runs out) is a
-    #   violation. See docs/ca_architecture_deviations.md — this replaces
-    #   the prior deadline->tier lookup, which picked a winner before any
-    #   APE had run (a logical resolution, not a physical one).
-    # ------------------------------------------------------------------
+    # See docs/ca_architecture_deviations.md §1 for the full rationale and
+    # what this replaced (a deadline->tier lookup picked before any APE ran).
 
     def __init__(self,
                  teleop: GzTeleop,

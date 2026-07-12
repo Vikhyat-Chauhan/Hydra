@@ -54,15 +54,9 @@ def _run_one_strategy(
     """
     nav = None
     try:
-        # CA now selects opportunistically from whichever APE proposals are
-        # actually ready at the deadline (cascading APE3 -> APE2 -> APE1),
-        # instead of predicting a winner tier in advance via a padded
-        # threshold. The manually-tuned safety margin this used to need
-        # (deadline >= 2589ms to "predict" APE3, vs. its raw 2035ms budget)
-        # is no longer necessary: graceful degradation to a lesser-but-ready
-        # APE is now automatic, so the tier distribution is a natural
-        # consequence of the real deadline distribution vs. real budgets,
-        # not a manually-tuned knob. See docs/ca_architecture_deviations.md.
+        # CA selects opportunistically among ready APE proposals at the
+        # deadline; no manual safety-margin threshold needed. See
+        # docs/ca_architecture_deviations.md §1.
         nav = LidarTargetNavigatorCA(ctrl, cfg, strategy_name)
         nav.attach_to_executor(exec)
         reached, elapsed, latency_us, compute_energy_j, events_handled, \
@@ -171,13 +165,8 @@ def main() -> None:
                     ),
                     (
                         # Multi-layer point cloud, feeds APE3/VFH only (see
-                        # nav_algorithm_T.py's _CloudSub). The LaserScan
-                        # bridge above is single-layer only — confirmed
-                        # empirically that ros_gz_bridge's LaserScan
-                        # converter silently truncates a multi-layer
-                        # gz.msgs.LaserScan to one layer with no warning,
-                        # so multi-layer data must go through PointCloud2
-                        # instead. See docs/ca_architecture_deviations.md.
+                        # nav_algorithm_T.py's _CloudSub). See
+                        # docs/ca_architecture_deviations.md §4.
                         "/model/drone1/front_lidar/scan/points",
                         "sensor_msgs/msg/PointCloud2",
                         "gz.msgs.PointCloudPacked",

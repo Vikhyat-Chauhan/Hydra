@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # ca_navigator/tools/ca_nav_gen_merged.py
 #
-# City-style NFZ generator only:
-# - Roads carved as free space (major/minor grid)
-# - Blocks subdivided into lots; lots optionally filled with "buildings" (rectangles)
-# Deterministic via a single master seed (also drives target placement with offset).
+# City-style NFZ generator: roads carved as free space on a major/minor grid,
+# blocks subdivided into lots, lots optionally filled with building rectangles.
+# Deterministic via a single master seed (also drives target placement).
+# See docs/CONFIGURATION.md "City-style generator" for technique references.
 #
 # Public usage:
 #   from ca_navigator.tools import ca_nav_gen_merged as merged
@@ -12,29 +12,6 @@
 #                      city_major_m=60.0, city_minor_m=30.0,
 #                      road_w_m=6.0, lot_w_m=14.0, lot_h_m=12.0,
 #                      lot_setback_m=1.5, lot_fill_prob=0.9, lot_jitter_m=2.0)
-# -----------------------------------------------------------------------------
-# References (IEEE style) for city-style NFZ generation & target placement
-#
-# [1] P. Parish and P. Müller, “Procedural Modeling of Cities,” Proc. SIGGRAPH, 2001.
-# [2] G. Chen, G. Esch, P. Wonka, and P. Müller, “Interactive Procedural Street Modeling,”
-#     ACM Trans. Graph. (SIGGRAPH Asia), vol. 27, no. 5, 2008.
-# [3] D. Galin, A. Peytavie, N. Maréchal, and E. Guérin, “Procedural Generation of Roads,”
-#     Computer Graphics Forum (Eurographics), vol. 29, no. 2, pp. 429–438, 2010.
-# [4] D. Galin, E. Guérin, A. Peytavie, and N. Maréchal, “Authoring Hierarchical Road Networks,”
-#     Computer Graphics Forum (Eurographics), vol. 30, no. 7, pp. 2021–2030, 2011.
-# [5] D. Aliaga, C. Vanegas, and B. Benes, “Interactive Example-Based Urban Layout Synthesis,”
-#     ACM Trans. Graph., vol. 27, no. 5, 2008 / surveys & follow-ups 2009–2012 (parcels/blocks).
-# [6] P. Müller, P. Wonka, S. Haegler, A. Ulmer, and L. Van Gool, “Procedural Modeling of
-#     Buildings,” Proc. SIGGRAPH, 2006.
-# [7] P. Wonka, M. Wimmer, F. Sillion, and W. Ribarsky, “Instant Architecture,” ACM Trans.
-#     Graph. (SIGGRAPH), vol. 22, no. 3, pp. 669–677, 2003.
-#
-# Code mapping:
-#   - Major/minor grids & road widths: [1], [2]   (deterministic grid w/ minor irregularities)
-#   - Blocks → lot subdivision + setbacks: [5]    (parceling inside blocks)
-#   - Per-lot building rectangles (NFZ proxies): [6], [7]
-#   - Hierarchical/weighted road rationale (optional extension): [3], [4]
-# -----------------------------------------------------------------------------
 
 
 from dataclasses import dataclass

@@ -38,7 +38,7 @@ sys.exit(1)
 PY
 then
   echo "Installing Gazebo transport Python bindings…"
-  sudo apt update
+  sudo apt update || true
   sudo apt install -y python3-gz-transport13 || \
   sudo apt install -y python3-gz-transport12 || \
   sudo apt install -y python3-gz-transport11 || \
@@ -58,7 +58,7 @@ sys.exit(1)
 PY
 then
   echo "Installing Gazebo Python msgs (optional)…"
-  sudo apt update
+  sudo apt update || true
   sudo apt install -y python3-gz-msgs11 || \
   sudo apt install -y python3-gz-msgs10 || true
 fi
@@ -112,10 +112,13 @@ if [[ "${XDG_SESSION_TYPE:-}" != "x11" ]]; then
   echo "NOTE: XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-unknown}. Gazebo/keyboard UI typically works best on X11."
 fi
 
+echo "==> 6) Building native APE ops library"
+make -C ca_navigator/native/ape_ops native
+
 #python3 "$PY_TARGEN_SCRIPT" # <- removed --seed 42 to randomize
 ./kill_ros.sh
 
-echo "==> 6) Running controller module"
+echo "==> 7) Running controller module"
 RUNS=1
 for i in $(seq 1 "$RUNS"); do
   echo "==> [Run $i/$RUNS]"

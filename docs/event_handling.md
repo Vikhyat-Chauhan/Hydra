@@ -20,9 +20,10 @@ Each event carries a deadline:
 deadline_s = clamp(alpha * dt, [deadline_min_s, deadline_max_s])
 ```
 
-with `alpha = 0.85`, `deadline_min_s = 0.12 s`, `deadline_max_s = 1.20 s`.
-The authoritative source for these parameters is `TeleopConfig`; they propagate
-into `EventCfg` via `EventCfg.from_teleop_cfg()`.
+with `alpha = 0.85`, `deadline_min_s = 0.073 s`, `deadline_max_s = 3.50 s`.
+These are `EventCfg`'s own tuned defaults (`ca_navigator/tools/event_emitter.py`),
+independently derived from — not propagated from — `TeleopConfig`'s own
+`deadline_min_s` (see `docs/CONFIGURATION.md`).
 
 ### 1.2 Arrival and intake
 
@@ -42,24 +43,14 @@ APE2, APE3) only one thread starts.  Each thread writes its result into
 
 ### 1.4 Selector logic
 
-Every nav tick while `event_active` is True the selector checks `time_left`:
-
-```
-target = APE3   if tl > t_med_s  (0.55 s)
-       = APE2   if tl > t_hard_s (0.22 s)
-       = APE1   otherwise
-```
-
-The preference order then falls back to lower-latency planners when the ideal one
-is not yet ready:
-
-```
-APE3-tier: [APE3, APE2, APE1]
-APE2-tier: [APE2, APE1]
-APE1-tier: [APE1]
-```
-
-If no plan is ready the selector loops, applying the previous baseline command.
+Selection is opportunistic, not predicted at intake: all three APE threads run
+in parallel from event arrival. As soon as APE3 (best quality) posts, it wins —
+nothing better can arrive. Otherwise the selector keeps waiting for a better
+answer until the deadline, then takes whichever of APE2/APE1 is ready. If no
+plan is ready when the deadline passes, that's a `DEADLINE` violation. See
+`nav_algorithm_T.py::_evt_cascade_order()` and
+`docs/ca_architecture_deviations.md` §1 for the full rationale and what this
+replaced (a deadline→tier lookup that picked a winner before any APE had run).
 
 ### 1.5 Resolution and commitment hold
 
@@ -79,7 +70,7 @@ On the immediately following ticks the commitment hold path fires:
 ```python
 if _commit_hold_active:
     hold_elapsed = time.time() - _evt_resolved_at
-    if hold_elapsed < commit_hold_s:   # 0.5 s
+    if hold_elapsed < commit_hold_s:   # 0.9 s
         v_cmd, wz_cmd, vz_cmd = _resolved_cmd
     else:
         _commit_hold_active = False
@@ -93,18 +84,19 @@ avoidance / heading-select / go-to path with no special-case logic.
 ### Timeline diagram
 
 ```
-t_recv                  APE1 ready   APE3 ready   deadline_at
-  |                         |              |            |
-  |----<1ms>----|---~16ms---|--~90ms max---|---up to 1.47s---|
-  ^             ^           ^             ^
-  event         APE1        APE3        deadline
-  arrives       done        done        window ends
+t_recv                  APE1 ready   APE2 ready   APE3 ready   deadline_at
+  |                         |             |             |          |
+  |---~29ms---|---~716ms----|---~1257ms---|---up to 3.50s----|
+  ^            ^            ^             ^
+  event        APE1         APE2          APE3       deadline
+  arrives      done         done          done        window ends
                 |
-                | selector picks best ready plan
+                | selector picks best ready plan (APE3 immediately if ready,
+                | else best-of-ready at deadline)
                 v
-          RESOLVED  (t ≈ 16 ms after t_recv for APE3-tier events)
+          RESOLVED
                 |
-                |<------- commit_hold_s = 0.5 s ------->|
+                |<------- commit_hold_s = 0.9 s ------->|
                 |  _resolved_cmd applied every nav tick  |
                                                          |
                                                          v
@@ -160,32 +152,15 @@ open event window.
 
 ---
 
-## Section 3 — Selector threshold calibration
+## Section 3 — Selector calibration
 
-### Tier definitions
-
-| Tier   | Condition            | Planner | Physical motivation |
-|--------|----------------------|---------|---------------------|
-| APE1   | tl ≤ 0.22 s          | APE1    | Reaction distance 1.8–3.3 m at v_max; only immediate evasion is feasible |
-| APE2   | 0.22 s < tl ≤ 0.55 s | APE2    | Medium horizon; partial sidestep with clearance check |
-| APE3   | tl > 0.55 s          | APE3    | Distant / slow events; full quality plan affordable |
-
-### Expected tier split
-
-From the corrected deadline distribution with `alpha = 0.85`,
-`deadline_min = 0.12 s`, `deadline_max = 1.20 s`, log-uniform dt ∈ [0.02, 4.0] s:
-
-- APE1 tier: ~48%
-- APE2 tier: ~17%
-- APE3 tier: ~35%
-
-### Parameter coupling
-
-`TeleopConfig` is the authoritative source for `deadline_alpha`, `deadline_min_s`,
-and `deadline_max_s`.  These propagate into `EventCfg` via
-`EventCfg.from_teleop_cfg()`, ensuring the emitter and the selector use a
-consistent deadline distribution.  `t_hard_s` and `t_med_s` in `EventDecisionCfg`
-must be re-calibrated if any of these parameters change.
+There are no static tier boundaries (no `t_hard_s`/`t_med_s`, no deadline→tier
+lookup table). The selector is purely opportunistic — see §1.4 and
+`nav_algorithm_T.py::_evt_cascade_order()`. APE budgets (`ape1_budget_ms`,
+`ape2_budget_ms`, `ape3_budget_ms` in `EventDecisionCfg`) come live from
+`orin_nx_cycle_model.py`'s gem5-measured `APE_LATENCY_US`, not a hand-tuned
+constant — see `docs/gem5_power_study.md` for how those numbers are produced
+and kept in sync with the real native planners.
 
 ---
 
@@ -193,11 +168,15 @@ must be re-calibrated if any of these parameters change.
 
 ### Why one nav tick is insufficient
 
-A single nav tick is ~33 ms (30 Hz).  APE2/APE3 sidestep commands move at
-`sidestep_speed_frac * max_v = 0.35 * 15.0 = 5.25 m/s`.  Against a ~1.2 m radius
-obstacle the drone needs to open at least 1.5 m of lateral clearance before it can
-safely resume forward flight.  At 5.25 m/s that requires ~0.29 s of sustained
-lateral motion minimum; `commit_hold_s = 0.5 s` provides a comfortable margin.
+A single nav tick is ~33 ms (30 Hz).  APE2 event commands move at up to
+`v_cap_frac * max_v = 0.75 * 15.0 = 11.25 m/s` (APE3/VFH now shares this same
+ceiling — see `ape3_vfh.c`; it no longer uses the old `sidestep_speed_frac`
+throttle inherited from the pre-VFH sidestep heuristic).  Against a ~1.2 m
+radius obstacle the drone needs to open at least 1.5 m of lateral clearance
+before it can safely resume forward flight.  Even at the *lowest* end of the
+observed speed range (well below the 11.25 m/s ceiling), that clearance opens
+in well under 0.29 s; `commit_hold_s = 0.9 s` remains a comfortable — now more
+conservative than strictly required — margin.
 
 ### Why the hold is explicit
 

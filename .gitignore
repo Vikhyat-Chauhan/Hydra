@@ -9,11 +9,11 @@ dist/
 build/
 .eggs/
 
-# APE SystemC build artifacts
-hydra_teleop/tools/ape_sim/build/
-
 # Generated simulation assets
 models/generated/
+
+# Local-only gem5 regeneration workspace (offline, not checked in)
+ca_navigator/measurements/
 
 # Third-party vendored code
 third_party/

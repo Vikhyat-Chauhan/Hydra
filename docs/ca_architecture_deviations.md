@@ -10,8 +10,8 @@ This is the origin paper for the Conflict Architecture (CA) concept —
 APE1/APE2/APE3, a selector, and event-driven resolution — that
 `ca_navigator/navigation/nav_algorithm_T.py` implements. It is also the
 source of the "AMD Zen 4" SystemC timing model that
-`ca_navigator/tools/orin_nx_cycle_model.py` and
-`docs/compute_power_model.md` cite (see "Timing model provenance" below).
+`ca_navigator/tools/orin_nx_cycle_model.py` cites (see "Timing model
+provenance" below).
 
 ---
 
@@ -108,8 +108,7 @@ of the paper's central claim:
 
 ## Timing model provenance (separate finding, not thesis-related)
 
-`orin_nx_cycle_model.py`'s docstring and `docs/compute_power_model.md`
-citation [8] describe the paper's SystemC "Zen 4" model as running at
+`orin_nx_cycle_model.py`'s docstring describes the paper's SystemC "Zen 4" model as running at
 **4500 MHz** (citing "AMD Ryzen 9 7950X Processor Specifications, 2022")
 with latencies in **SC_US** (microseconds). The actual paper states:
 
@@ -140,6 +139,52 @@ physical weight. Revisiting `DEADLINE_SCALE`/`_L` as if a bigger,
 literature-backed multiplicative constant could fix this is not
 correct: the source paper cannot be used to derive an absolute latency
 budget at all, by its own explicit statement.
+
+The op-count table this section originally described (`_L`/`_CYCLES` in
+`orin_nx_cycle_model.py`, hand-transcribing `nav_algorithm_T.py`'s old
+Python decision-math heuristics op-for-op, one row per ARM instruction
+type sourced from the ARM Cortex-A78 Software Optimization Guide,
+`ARM 103-0101 0003`) has since been deleted outright — see "Real compute,
+MCU-class timing" below. It was replaced, not patched, once gem5 began
+measuring the real native planners directly, because a hand-maintained
+proxy kept alongside the real implementation only reintroduces the same
+drift risk that produced the `DEADLINE_SCALE` bug above.
+
+---
+
+## Event timing floors: dt_min_s and deadline_min_s retuning history
+
+`EventCfg` (`ca_navigator/tools/event_emitter.py`) has two independently-tuned
+floors, both fixes for the same underlying bug class — a parameter set just
+above some APE's real cycle time, which meant that APE could never lose a
+race by coincidence rather than by genuine deadline pressure ("starvation by
+coincidence"):
+
+- **`dt_min_s`** (raw inter-arrival floor) was originally `0.113s`, chosen so
+  `alpha * dt_min_s` landed exactly on `deadline_min_s`. But `0.113s` sits
+  just above APE2's measured per-cycle budget (~90ms), so APE2 (or better)
+  had always completed a fresh cycle by the time any event arrived — APE1
+  (~1ms cycle) was never the sole eligible tier and recorded zero wins.
+  Lowered to `0.02s`, comfortably below APE2's cycle time, so the tightest
+  event gaps leave only APE1 eligible. (Eligibility is a race, not a
+  guarantee: APE2's persistent worker loops continuously, unsynchronized to
+  event arrivals, so even a window shorter than its period has some chance
+  of catching a tick — empirically, `0.04s` still weren't small enough;
+  `0.02s` drops that chance to roughly 20%, well above APE1's own ~1ms cycle
+  time.)
+- **`deadline_min_s`** was `0.096s` (`v_closing_obj = 8.0`, "moderate"),
+  which put the floor just above APE2's ~90ms cycle time for reasons
+  unrelated to APE2 itself — so APE2 could never be late enough to violate
+  any event's deadline, the same starvation-by-coincidence pattern as
+  `dt_min_s` above. Retuned to `0.073s` using `v_closing_obj = 15.0 m/s` —
+  the top of the 5-15 m/s closing-speed range commonly cited in
+  bird-strike/small-UAV sense-and-avoid literature, appropriate for a hard
+  minimum-reaction-time floor (which should use the worst case of its own
+  cited range, not a typical value). At `0.073s` the floor sits below
+  APE2's cycle time, so the tightest events can genuinely exceed APE2's
+  real compute cost. Full formula: `deadline_min = (sudden_obj_radius_m +
+  vehicle_radius_m + sudden_obj_clearance_m) / (v_max + v_closing_obj) =
+  (1.2 + 0.7 + 0.3) / (15.0 + 15.0) = 2.2m / 30m/s ≈ 0.073s`.
 
 ---
 

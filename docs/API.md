@@ -80,17 +80,25 @@ The primary navigation engine implementing deadline-aware APE selection with LiD
 **Constructor:**
 ```python
 LidarTargetNavigatorCA(
-    ctrl: GzTeleop,
+    teleop: GzTeleop,
     cfg: TeleopConfig,
-    strategy: str,
-    ape3_select_threshold_ms: int | None = None,
+    selector_mode: str,
+    drone_pose_topic: str | None = None,
+    target_pose_topic: str | None = "/model/target_sphere/pose/info",
+    goto_cfg: GoToConfig | None = None,
+    avoid_cfg: AvoidCfg | None = None,
+    crumb_cfg: BreadcrumbCfg | None = None,
+    safety_cfg: SafetyCfg | None = None,
+    risk_cfg: RiskCfg | None = None,
+    algo_cfg: ApeAlgoCfg | None = None,
 )
 ```
 
-- `ctrl`: Velocity controller for sending commands
+- `teleop`: Velocity controller for sending commands
 - `cfg`: Global configuration
-- `strategy`: Which planning mode to use (`"APE1"`, `"APE2"`, `"APE3"`, or `"CA"`)
-- `ape3_select_threshold_ms`: Override for the APE3 selection threshold; `None` uses `EventDecisionCfg` defaults. CA uses `2589` (APE3 budget + 554ms safety margin).
+- `selector_mode`: Which planning mode to use (`"APE1"`, `"APE2"`, `"APE3"`, or `"CA"`)
+- `drone_pose_topic` / `target_pose_topic`: Pose topic overrides
+- `goto_cfg`, `avoid_cfg`, `crumb_cfg`, `safety_cfg`, `risk_cfg`, `algo_cfg`: Optional dataclass overrides for each subsystem; each defaults to its own dataclass's defaults if omitted
 
 **Methods:**
 
@@ -118,14 +126,16 @@ Safety subsystem parameters (dataclass).
 
 #### `class EventDecisionCfg`
 
-APE timing thresholds (dataclass).
+APE timing thresholds (dataclass). `ape{1,2,3}_budget_ms` are computed live
+from `orin_nx_cycle_model.APE_LATENCY_US` (gem5-measured), not hardcoded —
+see `docs/CONFIGURATION.md` and `docs/gem5_power_study.md`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `ape1_budget_ms` | `int` | `523` | APE1 compute budget (ms) |
-| `ape2_budget_ms` | `int` | `1343` | APE2 compute budget (ms) |
-| `ape2_select_threshold_ms` | `int` | `1393` | APE2 budget + 50ms safety margin |
-| `ape3_budget_ms` | `int` | `2035` | APE3 compute budget (ms) |
+| `ape1_budget_ms` | `float` | ≈29.1 | APE1 compute budget (ms), gem5-measured |
+| `ape2_budget_ms` | `float` | ≈716.0 | APE2 compute budget (ms), gem5-measured |
+| `ape3_budget_ms` | `float` | ≈1257.3 | APE3 compute budget (ms), gem5-measured |
+| `commit_hold_s` | `float` | `0.9` | Commitment hold duration after a plan is resolved |
 
 ---
 

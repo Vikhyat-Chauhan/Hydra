@@ -159,14 +159,13 @@ The CA (Time-Resource Optimized Operations Planner) navigator is the core intell
                                │
                  ┌─────────────┼─────────────┐
                  │             │             │
-          t_left > t_med    t_hard <     t_left ≤
-                          t_left ≤ t_med   t_hard
+            all three APEs run in parallel from event arrival
                  │             │             │
                  ▼             ▼             ▼
             ┌────────┐   ┌────────┐   ┌────────┐
             │  APE3  │   │  APE2  │   │  APE1  │
             │  Full  │   │  Med   │   │  Fast  │
-            │~2035ms │   │~1343ms │   │ ~523ms │
+            │~1257ms │   │ ~716ms │   │ ~29ms  │
             └────┬───┘   └────┬───┘   └────┬───┘
                  │             │             │
                  └─────────────┼─────────────┘
@@ -185,9 +184,11 @@ The CA (Time-Resource Optimized Operations Planner) navigator is the core intell
                     └──────────────────────┘
 ```
 
-CA uses `ape3_select_threshold_ms=2589` (APE3 budget + 554ms safety margin), which shifts approximately 14% of events from APE3 to APE2 relative to the raw budget boundary. Solo APE1/APE2/APE3 strategies use the default thresholds from `EventDecisionCfg`.
+Selection is opportunistic, not predicted: take APE3 the moment it's ready (nothing better can arrive); otherwise keep waiting for a better answer until the deadline, then take whichever of APE2/APE1 is ready. Only a true `DEADLINE_MISS` (nothing ready at all when time runs out) is a violation. See `docs/ca_architecture_deviations.md` §1 for the full rationale and what this replaced.
 
 ### LiDAR Processing Pipeline
+
+APE1/APE2 and the base avoidance loop use a single-layer `LaserScan`:
 
 ```
 Raw LaserScan (360° or limited arc)
@@ -217,6 +218,8 @@ Raw LaserScan (360° or limited arc)
 │  - Breadcrumb tie-breaking │
 └────────────────────────────┘
 ```
+
+APE3/VFH additionally consumes a 5-layer `PointCloud2` (`_CloudSub`) for multi-layer obstacle consensus — `LaserScan` has no vertical dimension, and `ros_gz_bridge`'s `LaserScan` converter silently truncates multi-layer scans to one layer. See `docs/ca_architecture_deviations.md` §4 ("Multi-layer sensing") for why.
 
 ### Safety Subsystems
 
@@ -272,6 +275,8 @@ Desired Velocity (vx, vy, vz, wz)
       (published to Gazebo)
 ```
 
+Tuned to DJI FlyCart 30 limits: ~65 kg mass (two DB2000 batteries, MTOW ~95 kg with cargo); max tilt ~30° → lateral accel cap `a_xy_max = g*tan(30°) ≈ 5.66 m/s²`; max horizontal speed 15 m/s typical / 20 m/s absolute; max ascent 5 m/s / descent 3 m/s; max wind resistance ~12 m/s (`wind_level=1.0` approximates this) [DJI-FC30-SPECS][DJI-FC30-UM]. Drag coefficients (`k1`, `k2`) are conservative defaults, intended to be regressed from flight/sim logs per [Hattenberger-2023]. Wind uses OU (tau, sigma) approximating gust autocorrelation/strength [OU-1930]; Dryden/von Kármán spectra are a drop-in alternative for canonical turbulence [Dryden-Std]. 2nd-order tracking with jerk limits follows layered UAV safety/control practice [Cuniato-2022].
+
 ---
 
 ## Energy Model
@@ -284,12 +289,15 @@ CANavigator tracks two independent energy sources:
 P(t) = P_idle + (TDP - P_idle) * U_eff * (f / f_base)^alpha
 
 Where:
-  TDP        = 25 W (Jetson Orin NX 16GB thermal design power)
-  P_idle     = TDP * idle_frac (20%)
-  U_eff      = effective CPU utilization
-  f / f_base = frequency scaling ratio
-  alpha      = 1.5 (superlinear scaling)
+  TDP        = 25 W (Jetson Orin NX 16GB MAXN TDP, DS-10662-001 Table 1)
+  P_idle     = TDP * idle_frac (10%, ~2.5W — TB-10580-001)
+  U_eff      = effective CPU utilization = latency_us / (wall_s * N_cores)
+  N_cores    = 8 (8x ARM Cortex-A78AE, DS-10662-001 Table 2)
+  f / f_base = frequency scaling ratio (f_base = 2.0 GHz, DS-10662-001)
+  alpha      = 1.5 (CMOS dynamic-power exponent, Bircher & John, IEEE TC 2012)
 ```
+
+`(f/f_base)^alpha` evaluates to 1.0 in the current model since gem5's cycle counts already reflect execution at `f_base`, so the term is omitted from the live computation (`orin_nx_cycle_model.py::latency_to_energy_j`).
 
 ### Motion Energy
 

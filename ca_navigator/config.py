@@ -7,7 +7,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 @dataclass
 class TeleopConfig:
     # --- Run Options ---
-    simulation_runs = 1
+    simulation_runs = 5
     simulation_timeout = 200
     simulation_world_style = "city" #"perlin|city"
     # --- Sim / world ---
@@ -16,7 +16,7 @@ class TeleopConfig:
     sim_env: dict | None = None
     sim_boot_secs: float = 8.0
     fixed_seed = False
-    world_gen_seed_offset = 112
+    world_gen_seed_offset = 4321
     target_distance = 150
     # --- Gazebo transport ---
     topic: str = "/model/drone1/cmd_vel"  # gz.msgs.Twist
@@ -89,29 +89,12 @@ class TeleopConfig:
     event_log_csv_path = "logs/events_log.csv"
 
     # -----------------------
-    # Deadline model — AUTHORITATIVE SOURCE
-    # Propagated into EventCfg via EventCfg.from_teleop_cfg().
-    # Must stay consistent with EventDecisionCfg thresholds in nav_algorithm_T.py.
-    #
-    # RETUNED for MCU-scale budgets (APE1≈15.9ms / APE2≈16.8ms / APE3≈58.6ms,
-    # ca_navigator/tools/orin_nx_cycle_model.py APE_LATENCY_US). The old
-    # 600-700ms floor was tuned against pre-gem5-MCU budgets three orders
-    # of magnitude smaller than today's; with it, CA always had time to
-    # wait for APE3, so the speed/accuracy tradeoff never engaged (see
-    # docs/ca_architecture_deviations.md — confirmed empirically: 11/11 CA
-    # resolutions picked APE3 in a real run under the old floor).
-    #
-    # Physical grounding — sudden-obstacle reaction window (the tightest
-    # real scenario the sim models), not the general LiDAR-safe-boundary
-    # case used before:
-    #   deadline_min = (sudden_obj_radius_m + vehicle_radius_m +
-    #                    sudden_obj_clearance_m) / v_max
-    #                = (1.2 + 0.7 + 0.3) / 15.0 = 2.2m / 15m/s ≈ 0.147s
-    #   (sudden_obj_radius_m/vehicle_radius_m/sudden_obj_clearance_m are
-    #   EventDecisionCfg/RiskCfg defaults in nav_algorithm_T.py; v_max is
-    #   GoToConfig.max_v.)
-    #   deadline_max = 3500ms → 52m (far-field threat, unchanged — still a
-    #   reasonable long-horizon replanning window, not tied to APE budgets)
+    # Deadline model: deadline = clamp(alpha * dt, [deadline_min_s, deadline_max_s]).
+    # deadline_min_s = sudden-obstacle reaction window = (1.2+0.7+0.3)/15.0 ≈ 0.147s.
+    # NOT propagated to EventCfg (event_emitter.py), which has its own
+    # independently-tuned floor — see docs/CONFIGURATION.md "Deadline Model"
+    # for the full derivation and docs/ca_architecture_deviations.md for the
+    # retuning history (this floor used to starve APE1/APE2 of wins).
     # -----------------------
     deadline_alpha: float = 0.85
     deadline_min_s: float = 0.147

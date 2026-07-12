@@ -48,7 +48,7 @@ Any opinions, findings, and conclusions or recommendations expressed in this mat
 
 ## Highlights
 
-- **Deadline-Aware APE Selection** -- Dynamically selects between fast (~523 ms), medium (~1343 ms), and full (~2035 ms) planning algorithms based on real-time event deadlines
+- **Deadline-Aware APE Selection** -- Dynamically selects between fast (~29 ms), medium (~716 ms), and full (~1257 ms) planning algorithms based on real-time event deadlines
 - **CA Meta-Algorithm** -- Time-budget-aware selector that picks the best available planner within deadline constraints, maximizing planning quality without missing deadlines
 - **Procedural World Generation** -- City-grid and Perlin-noise arena generators create unique no-fly zone layouts for each run, ensuring statistical robustness
 - **Physics-Accurate Simulation** -- DJI FlyCart 30-tuned dynamics model with actuator latency, aerodynamic drag, jerk limiting, and Ornstein-Uhlenbeck wind gusts
@@ -90,7 +90,7 @@ Any opinions, findings, and conclusions or recommendations expressed in this mat
               │                                          │
               │   ┌──────┐  ┌──────┐  ┌──────┐          │
               │   │ APE1 │  │ APE2 │  │ APE3 │          │
-              │   │ 523ms│  │1343ms│  │2035ms│          │
+              │   │ 29ms │  │716ms │  │1257ms│          │
               │   │ Fast │  │ Med  │  │ Full │          │
               │   └──┬───┘  └──┬───┘  └──┬───┘          │
               │      └─────────┼─────────┘              │
@@ -112,15 +112,7 @@ Any opinions, findings, and conclusions or recommendations expressed in this mat
 
 ### APE Deadline Selection
 
-The CA meta-algorithm selects planners based on time remaining before an event deadline:
-
-```
-Time Left (t_left)          Selected Planner
-─────────────────────────────────────────────
-t_left  > t_med             APE3 (full planning, best quality)
-t_hard  < t_left ≤ t_med    APE2 (corridor planning, balanced)
-t_left  ≤ t_hard            APE1 (fast dodge, emergency)
-```
+The CA meta-algorithm selects opportunistically, not by a fixed time-remaining threshold: all three APEs run in parallel from event arrival, APE3 wins the moment it's ready, and otherwise the best-ready-so-far plan is taken at the deadline. See [`docs/ca_architecture_deviations.md`](docs/ca_architecture_deviations.md) §1 for the full rationale.
 
 ---
 
@@ -145,9 +137,14 @@ ca_navigator/
 │   │   ├── energy_monitor.py       # Energy-per-meter estimation
 │   │   ├── arena_generator_city.py # City-grid NFZ generation
 │   │   ├── arena_generator_perlin.py # Perlin-noise NFZ generation
-│   │   ├── target_generator.py     # Safe target placement
-│   │   ├── nofly_generator.py      # No-fly zone SDF generation
+│   │   ├── ape_native.py           # ctypes bridge to native/ape_ops
+│   │   ├── orin_nx_cycle_model.py  # APE compute latency + energy model
+│   │   ├── gem5_measured_latencies.py     # gem5-frozen A78 latencies
+│   │   ├── gem5_measured_latencies_mcu.py # gem5-frozen MCU-approx latencies
+│   │   ├── rtf_monitor.py          # Gazebo real-time-factor monitor
 │   │   └── bridge.py              # ROS 2 ↔ Gazebo parameter bridge
+│   ├── native/
+│   │   └── ape_ops/                # C-native Bug/DWA/VFH planners (ape1/2/3), ctypes ABI
 │   ├── logging/
 │   │   └── async_logger.py         # Queue-based async JSON logger
 │   └── analysis/
@@ -164,7 +161,10 @@ ca_navigator/
 ├── docs/                           # Extended documentation
 │   ├── ARCHITECTURE.md             # System design deep-dive
 │   ├── CONFIGURATION.md            # All configuration parameters
-│   └── API.md                      # Module & class API reference
+│   ├── API.md                      # Module & class API reference
+│   ├── event_handling.md           # Event lifecycle, selector, CSV schema
+│   ├── ca_architecture_deviations.md # Deviations from the source CA paper
+│   └── gem5_power_study.md         # gem5/McPAT compute latency validation
 └── LICENSE                         # MIT
 ```
 
@@ -295,6 +295,9 @@ See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for a full parameter refere
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System design, data flow, and component interactions |
 | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Complete parameter reference with defaults and descriptions |
 | [`docs/API.md`](docs/API.md) | Module-level API reference for all classes and functions |
+| [`docs/event_handling.md`](docs/event_handling.md) | Event episode lifecycle, violation taxonomy, selector logic, CSV schema |
+| [`docs/ca_architecture_deviations.md`](docs/ca_architecture_deviations.md) | How CANavigator's CA implementation deviates from the source paper |
+| [`docs/gem5_power_study.md`](docs/gem5_power_study.md) | gem5/McPAT cycle-accurate validation of APE compute latency |
 
 ---
 

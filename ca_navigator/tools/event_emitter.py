@@ -22,62 +22,19 @@ class EventCfg:
 
     # ---- Fixed defaults (not meant to be tuned) ----
     topic: str = field(default="/ca_navigator/event", init=False)
-    # dt_min_s is intentionally DECOUPLED from deadline_min_s below.
-    # deadline_min_s (0.096s) stays physically grounded in the
-    # sudden-obstacle reaction window and remains a hard floor on the
-    # deadline handed to the event via the deadline_alpha*dt clamp.
-    # dt_min_s, however, governs the raw inter-arrival floor, and was
-    # previously set (0.113s) so that alpha*dt_min_s landed exactly on
-    # deadline_min_s — but 0.113s sits just above APE2's measured
-    # per-cycle budget (~90ms), so APE2 (or better) had always completed
-    # a fresh cycle by the time ANY event arrived, and APE1 (~1ms cycle)
-    # was never the sole eligible tier in the CA cascade — it recorded
-    # zero wins. Lowered here to sit below APE2's cycle time so the
-    # tightest event gaps leave only APE1 eligible, letting CA actually
-    # exercise all three tiers (see nav_algorithm_T.py's
-    # _evt_cascade_order / eligibility logic and
-    # docs/ca_architecture_deviations.md).
-    #
-    # NOTE: eligibility is a race, not a guarantee — APE2's persistent
-    # worker loops continuously and unsynchronized to event arrivals, so
-    # even a window shorter than its ~90ms period has some chance
-    # (~window/period) of catching one of its ticks. 0.04s wasn't small
-    # enough in practice (empirically, APE2 still won every tight-gap
-    # event in a 37-event run). Dropped further to 0.02s so that chance
-    # drops to roughly 20%, well above APE1's own ~1ms cycle time so it
-    # remains reliably ready.
+    # dt_min_s is intentionally decoupled from deadline_min_s below — it
+    # governs the raw inter-arrival floor, tuned below APE2's cycle time so
+    # the tightest gaps leave only APE1 eligible. See
+    # docs/ca_architecture_deviations.md "Event timing floors" for the
+    # starvation-by-coincidence bug this fixes and the retuning history.
     dt_min_s: float = field(default=0.02, init=False)
     dt_max_s: float = field(default=4.0,  init=False)  # log-uniform upper bound
 
-    # Deadline model: deadline = clamp(α * Δt, [min, max]).
-    #
-    # Physical grounding — sudden-obstacle reaction window (the tightest
-    # real scenario the sim models): "sudden obstacle" events represent
-    # something like a bird, another small UAV, or a person/vehicle moving
-    # into the flight path, not a static obstacle the drone flies into; the
-    # time actually available to react is governed by closing speed, not
-    # ego speed alone:
-    #   deadline_min = (sudden_obj_radius_m + vehicle_radius_m +
-    #                    sudden_obj_clearance_m) / (v_max + v_closing_obj)
-    #                = (1.2 + 0.7 + 0.3) / (15.0 + 15.0) = 2.2m / 30m/s ≈ 0.073s
-    #   v_closing_obj = 15.0 m/s: a hard minimum-reaction-time FLOOR should
-    #   use the worst-case end of its own cited range, not a typical one —
-    #   bird-strike/small-UAV-conflict literature commonly cites relative
-    #   closing speeds in the 5-15 m/s range for sense-and-avoid scenarios,
-    #   so 15 m/s (the top of that range) is the appropriate pick for a
-    #   floor meant to represent "you cannot possibly need to react faster
-    #   than this." The previous pick (8.0, "moderate") put the floor
-    #   (0.096s) just above APE2's own measured cycle time (~90ms) for
-    #   reasons having nothing to do with APE2 — so APE2 could never be
-    #   late enough to violate any event's deadline, exactly the same
-    #   starvation-by-coincidence bug dt_min_s had for APE1 (see above).
-    #   At 0.073s the floor sits below APE2's cycle time, so the tightest
-    #   events can genuinely exceed APE2's real compute cost.
-    #   (sudden_obj_radius_m/vehicle_radius_m/sudden_obj_clearance_m are
-    #   EventDecisionCfg/RiskCfg defaults in nav_algorithm_T.py; v_max is
-    #   GoToConfig.max_v.)
-    #   deadline_max = 3500ms → 52m (far-field threat, unchanged — still a
-    #   reasonable long-horizon replanning window, not tied to APE budgets)
+    # Deadline model: deadline = clamp(alpha * dt, [min, max]).
+    # deadline_min_s = sudden-obstacle reaction window at worst-case closing
+    # speed = (1.2+0.7+0.3)/(15.0+15.0) ≈ 0.073s. See
+    # docs/ca_architecture_deviations.md "Event timing floors" for the full
+    # derivation and the starvation-by-coincidence bug this fixed.
     deadline_alpha: float = field(default=0.85, init=False)
     deadline_min_s: float = field(default=0.073, init=False)
     deadline_max_s: float = field(default=3.50, init=False)

@@ -27,6 +27,17 @@ All configuration is centralized in [`ca_navigator/config.py`](../ca_navigator/c
 | `target_distance` | `int` | `150` | Minimum Euclidean distance (meters) from start to target |
 | `target_json_path` | `str` | `"models/generated/generated_target_meta.json"` | Path to the generated target position JSON |
 
+### City-style generator (`arena_generator_city.py`)
+
+Deterministic, seeded generation of roads (carved as free space on a major/minor grid), blocks subdivided into lots, and lots optionally filled with building rectangles as NFZ proxies. Same master seed also offsets target placement.
+
+| Technique | Reference |
+|---|---|
+| Major/minor road grid | Parish & Müller, *Procedural Modeling of Cities*, SIGGRAPH 2001; Chen et al., *Interactive Procedural Street Modeling*, SIGGRAPH Asia 2008 |
+| Block → lot subdivision + setbacks | Aliaga, Vanegas & Benes, *Interactive Example-Based Urban Layout Synthesis*, ACM ToG 2008 |
+| Per-lot building rectangles | Müller et al., *Procedural Modeling of Buildings*, SIGGRAPH 2006; Wonka et al., *Instant Architecture*, SIGGRAPH 2003 |
+| Hierarchical/weighted roads (optional extension) | Galin et al., *Procedural Generation of Roads*, Eurographics 2010; *Authoring Hierarchical Road Networks*, Eurographics 2011 |
+
 ---
 
 ## Gazebo Transport
@@ -64,10 +75,12 @@ All configuration is centralized in [`ca_navigator/config.py`](../ca_navigator/c
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `deadline_alpha` | `float` | `0.85` | Deadline fraction: `deadline = alpha * delta_t` |
-| `deadline_min_s` | `float` | `0.70` | Minimum deadline clamp (seconds) |
+| `deadline_min_s` | `float` | `0.147` | Minimum deadline clamp (seconds) |
 | `deadline_max_s` | `float` | `3.50` | Maximum deadline clamp (seconds) |
 
-At `v_max = 15 m/s`: `deadline_min = 0.70s` → ~10.5 m reaction distance; `deadline_max = 3.50s` → ~52.5 m far-field horizon.
+`deadline_min_s` is derived from the sudden-obstacle reaction window: `(sudden_obj_radius_m + vehicle_radius_m + sudden_obj_clearance_m) / v_max = (1.2 + 0.7 + 0.3) / 15.0 ≈ 0.147s` → ~2.2 m reaction distance at `v_max = 15 m/s`. `deadline_max_s = 3.50s` → ~52.5 m far-field horizon. See `docs/ca_architecture_deviations.md` for the history behind this retuning.
+
+Note: `EventCfg` (the runtime config actually used by `event_emitter.py`) has its own independently-tuned `deadline_min_s = 0.073s` floor — it is **not** derived from `TeleopConfig.deadline_min_s` above; the two are intentionally decoupled (see `event_emitter.py`'s `EventCfg` docstring).
 
 ### Event Mix
 

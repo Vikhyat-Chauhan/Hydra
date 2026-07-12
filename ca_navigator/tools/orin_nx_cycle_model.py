@@ -31,49 +31,11 @@ change to the native planners or gem5 configs) so this module — and
 everything that imports it, including the live ROS 2 navigator — never
 needs the gem5 toolchain installed just to know APE compute cost.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-POWER MODEL PARAMETERS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  TDP      = 25 W     NVIDIA Jetson Orin NX 16GB, MAXN (maximum performance)
-                      power mode.  Source: NVIDIA DS-10662-001, Table 1
-                      "Module Electrical Specifications".
-
-  idle_frac = 0.10    Module idle power is approximately 2–3 W from NVIDIA
-                      Jetson Orin Power Estimation and Measurement Application
-                      Note (NVIDIA document TB-10580-001).
-                      10% = 2.5 W / 25 W TDP.
-
-  N_cores  = 8        8× ARM Cortex-A78AE cores.
-                      Source: NVIDIA DS-10662-001, Table 2 "Module Features".
-
-  f_base   = 2.0 GHz  CPU maximum frequency.
-                      Source: NVIDIA DS-10662-001.
-
-  α        = 1.5      CMOS dynamic-power frequency exponent.
-                      Source: Bircher & John, IEEE Trans. Computers, 2012
-                      (α is a material/process property, not
-                      processor-specific).
-
-Note: Because gem5's A78 cycle counts already reflect real execution at
-f_base = 2.0 GHz, the frequency-ratio term (f/f_base)^α = 1.0 and is
-omitted from the energy calculation.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-HISTORY
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-This file previously derived APE latency from a hand-authored op-count
-table (`_L`/`_CYCLES`, transcribing nav_algorithm_T.py's old Python
-decision-math heuristics op-for-op) rather than measuring real algorithm
-execution. That table, and the DEADLINE_SCALE double-counting bug found
-in it, are documented in docs/gem5_power_study.md and
-docs/ca_architecture_deviations.md. It has been removed outright — once
-gem5 measures the real Bug/DWA/VFH planners directly, there is nothing
-left for a hand-estimated proxy to validate against, and keeping one
-would only reintroduce the same drift-prone transcription problem that
-caused that bug (found twice: a stale APE2 profile, and an undocumented
-sqrt≈div×2 approximation).
+Power model parameters (TDP, idle_frac, N_cores, f_base, alpha) and their
+datasheet/literature sources are documented in docs/ARCHITECTURE.md's
+"Energy Model" section. See docs/ca_architecture_deviations.md ("Timing
+model provenance") for why this module no longer uses a hand-authored
+op-count table.
 """
 
 from __future__ import annotations

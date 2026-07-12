@@ -14,6 +14,9 @@ rm -rf logs
 source "$VENV_DIR/bin/activate"
 export PYTHONPATH="/usr/lib/python3/dist-packages:${PYTHONPATH:-}"
 
+echo "==> Building native APE ops library"
+make -C ca_navigator/native/ape_ops native
+
 echo "==> 6) Running controller module"
 RUNS=1
 for i in $(seq 1 "$RUNS"); do

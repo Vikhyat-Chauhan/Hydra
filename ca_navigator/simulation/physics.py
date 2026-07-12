@@ -254,23 +254,4 @@ class DronePhysics:
         self._wind_ax = self._wind_ay = self._wind_az = 0.0
         self._rng.seed(self._wind_seed)
 
-
-# ----------------------------- Notes & Tuning -----------------------------
-# DJI FlyCart 30 key limits used here:
-# - Weight: ~65 kg with two DB2000 batteries; MTOW up to ~95 kg (with cargo).      # [DJI-FC30-SPECS][DJI-FC30-UM]
-# - Max pitch/tilt: ~30°  -> lateral accel cap a_xy_max = g * tan(30°) ≈ 5.66 m/s². # [DJI-FC30-UM]
-# - Max horizontal speed: 15 m/s typical; 20 m/s max.                               # [DJI-FC30-SPECS]
-# - Max ascent speed 5 m/s; max descent speed 3 m/s.                                # [DJI-FC30-UM]
-# - Max wind resistance ~12 m/s; "wind_level"=1.0 approximates that scenario.       # [DJI-FC30-SPECS]
-#
-# Drag fitting hint (from [Hattenberger-2023]):
-#   Regress residual acceleration a_residual = dv/dt - a_model ≈ -(k1 v + k2 |v| v) per axis.
-#   Use flight/sim data to solve for (k1,k2), capture quadratic dominance at typical speeds.
-#
-# Wind modeling notes:
-#   OU parameters (tau, sigma) approximate gust autocorrelation and strength [OU-1930].
-#   For canonical turbulence spectra, Dryden/von Kármán standards can replace OU [Dryden-Std].
-#
-# Teleop shaping rationale:
-#   2nd-order tracking with jerk limits provides smooth, realizable demands and aligns with
-#   layered safety/control architectures in recent UAV work [Cuniato-2022].
+# See docs/ARCHITECTURE.md "Physics Model" for tuning rationale and citations.
