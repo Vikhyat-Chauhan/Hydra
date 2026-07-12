@@ -129,8 +129,8 @@ Two errors follow from this:
    real-world hardware latency. Treating them as a portable, physically
    real Zen-4-to-Orin-NX latency baseline (as `orin_nx_cycle_model.py`
    does) is a category error independent of, and upstream of, the
-   `DEADLINE_SCALE` double-counting bug documented in
-   `docs/gem5_power_study.md` §3.1.
+   `DEADLINE_SCALE` calibration question tracked in
+   `docs/gem5_power_study.md` ("Open questions").
 
 This means the entire downstream power/energy modeling effort — not just
 the specific double-counting bug — is built on a foundation (the paper's
@@ -140,189 +140,104 @@ literature-backed multiplicative constant could fix this is not
 correct: the source paper cannot be used to derive an absolute latency
 budget at all, by its own explicit statement.
 
-The op-count table this section originally described (`_L`/`_CYCLES` in
-`orin_nx_cycle_model.py`, hand-transcribing `nav_algorithm_T.py`'s old
-Python decision-math heuristics op-for-op, one row per ARM instruction
-type sourced from the ARM Cortex-A78 Software Optimization Guide,
-`ARM 103-0101 0003`) has since been deleted outright — see "Real compute,
-MCU-class timing" below. It was replaced, not patched, once gem5 began
-measuring the real native planners directly, because a hand-maintained
-proxy kept alongside the real implementation only reintroduces the same
-drift risk that produced the `DEADLINE_SCALE` bug above.
-
 ---
 
-## Event timing floors: dt_min_s and deadline_min_s retuning history
+## Event timing floors
 
 `EventCfg` (`ca_navigator/tools/event_emitter.py`) has two independently-tuned
-floors, both fixes for the same underlying bug class — a parameter set just
-above some APE's real cycle time, which meant that APE could never lose a
-race by coincidence rather than by genuine deadline pressure ("starvation by
-coincidence"):
+floors, sized so that no APE can win or violate a deadline purely by
+coincidence rather than genuine timing pressure:
 
-- **`dt_min_s`** (raw inter-arrival floor) was originally `0.113s`, chosen so
-  `alpha * dt_min_s` landed exactly on `deadline_min_s`. But `0.113s` sits
-  just above APE2's measured per-cycle budget (~90ms), so APE2 (or better)
-  had always completed a fresh cycle by the time any event arrived — APE1
-  (~1ms cycle) was never the sole eligible tier and recorded zero wins.
-  Lowered to `0.02s`, comfortably below APE2's cycle time, so the tightest
-  event gaps leave only APE1 eligible. (Eligibility is a race, not a
-  guarantee: APE2's persistent worker loops continuously, unsynchronized to
-  event arrivals, so even a window shorter than its period has some chance
-  of catching a tick — empirically, `0.04s` still weren't small enough;
-  `0.02s` drops that chance to roughly 20%, well above APE1's own ~1ms cycle
-  time.)
-- **`deadline_min_s`** was `0.096s` (`v_closing_obj = 8.0`, "moderate"),
-  which put the floor just above APE2's ~90ms cycle time for reasons
-  unrelated to APE2 itself — so APE2 could never be late enough to violate
-  any event's deadline, the same starvation-by-coincidence pattern as
-  `dt_min_s` above. Retuned to `0.073s` using `v_closing_obj = 15.0 m/s` —
-  the top of the 5-15 m/s closing-speed range commonly cited in
-  bird-strike/small-UAV sense-and-avoid literature, appropriate for a hard
-  minimum-reaction-time floor (which should use the worst case of its own
-  cited range, not a typical value). At `0.073s` the floor sits below
-  APE2's cycle time, so the tightest events can genuinely exceed APE2's
-  real compute cost. Full formula: `deadline_min = (sudden_obj_radius_m +
-  vehicle_radius_m + sudden_obj_clearance_m) / (v_max + v_closing_obj) =
-  (1.2 + 0.7 + 0.3) / (15.0 + 15.0) = 2.2m / 30m/s ≈ 0.073s`.
+- **`dt_min_s`** (raw inter-arrival floor) = `0.02s`, comfortably below
+  APE2's measured per-cycle budget (~90ms), so the tightest event gaps
+  leave only APE1 eligible. (Eligibility is a race, not a guarantee:
+  APE2's persistent worker loops continuously, unsynchronized to event
+  arrivals, so even a window shorter than its period has some chance of
+  catching a tick — `0.02s` keeps that chance to roughly 20%, well above
+  APE1's own ~1ms cycle time.)
+- **`deadline_min_s`** = `0.073s`, derived from `deadline_min =
+  (sudden_obj_radius_m + vehicle_radius_m + sudden_obj_clearance_m) /
+  (v_max + v_closing_obj) = (1.2 + 0.7 + 0.3) / (15.0 + 15.0) = 2.2m /
+  30m/s ≈ 0.073s`, using `v_closing_obj = 15.0 m/s` — the top of the
+  5-15 m/s closing-speed range commonly cited in bird-strike/small-UAV
+  sense-and-avoid literature, appropriate for a hard minimum-reaction-time
+  floor (which should use the worst case of its own cited range, not a
+  typical value). This sits below APE2's cycle time, so the tightest
+  events can genuinely exceed APE2's real compute cost.
 
 ---
 
-## Current state: real compute, MCU-class timing, two hardware targets
+## Current implementation: real algorithms, two hardware targets
 
-Two follow-up changes replaced the mechanisms above rather than just
-documenting their problems:
+**APE1/2/3 are real, literature-standard algorithms, written in C — not
+simplified heuristics.** APE1 is a reactive potential-field/Bug-style
+controller; APE2 is real Dynamic Window Approach (Fox, Burgard & Thrun
+1997); APE3 is real Vector Field Histogram (Borenstein & Koren 1991) with
+a valley-search step. This is what restores the "Map Search algorithm"
+fidelity the paper calls for in APE3's role. See `docs/gem5_power_study.md`
+for algorithm details and measured gem5 cycle costs.
 
-**1. Genuine computation, genuine parallelism.** `_evt_plan_ape1/2/3()` no
-longer stand in for compute cost with `time.sleep()` alone. They call
-`ca_navigator/tools/ape_native.py` → `ca_navigator/native/ape_ops/` (a
-ctypes-bridged native build of the same op-kernel C code the gem5 studies
-use), which genuinely consumes CPU cycles and — because `ctypes` releases
-the GIL for foreign calls — genuinely runs across real cores in parallel
-with the other APE threads. The real compute duration is tiny relative to
-`budget_ms` (real host hardware is far faster than the simulated targets
-below), so a top-up `time.sleep()` still makes up the difference to reach
-the nominal gem5-derived budget — but the work itself is now real, not
-purely simulated.
+**Python's role in the APE path is marshaling only.** `_evt_plan_ape1/2/3()`
+in `nav_algorithm_T.py` call `ca_navigator/tools/ape_native.py` →
+`ca_navigator/native/ape_ops/src/ape{1,2,3}_*.c` via `ctypes`: marshal the
+raw LiDAR scan + config into a struct, call the native planner, unpack
+`(v, wz, vz, score)`, hand it to the selector. There is exactly one
+implementation of each APE's decision logic, and gem5 measures that same
+real C code directly — each APE is a genuinely separate,
+independently-compiled unit of computation, matching the paper's MISD
+framing more strictly than three Python closures sharing an interpreter
+would. Because `ctypes` releases the GIL for foreign calls, the three
+APEs also genuinely run across real cores in parallel during planning.
 
-**2. Planning-deadline timing now models the flight controller, not the
-companion computer.** `orin_nx_cycle_model.py`'s `APE_LATENCY_US` (what
-`nav_algorithm_T.py`'s `budget_ms` derives from) is now sourced from a
-second gem5 study — `configs/cortex_m7_inorder.py`, an in-order MinorCPU
-config approximating Cortex-M7 (gem5 has no true M-profile CPU model; see
-that file's docstring for the full caveat list) — instead of the
-Cortex-A78/Orin-NX study. Real ArduPilot-class flight controllers run on
-Cortex-M-class MCUs; using the Orin-NX numbers made every event's
-deadline vastly exceed even APE3's budget, so the opportunistic selector
-(§ above) always picked APE3 — the speed/accuracy tradeoff never engaged
-(confirmed empirically at the time: 11/11 CA resolutions picked APE3 in
-a real run). This has since been superseded twice more — first by
-retuning `deadline_min_s` to a physically-derived floor (still
-insufficient on its own, see §"Real C-native APE algorithms" below), and
-then by replacing the synthetic op-count workload with real Bug/DWA/VFH
-algorithms whose gem5-measured cost is now large enough
-(APE1≈29ms/APE2≈716ms/APE3≈1257ms) to be genuinely comparable to real
-event deadlines, without further deadline tightening. See that section
-for the current numbers and reasoning; whether `DEADLINE_SCALE=1000` still
-needs adjustment on top is still explicitly unverified, not silently
-resolved.
-
-**This creates a real, load-bearing split worth being explicit about**:
-`OrinNxCycleMeter`/`latency_to_energy_j` (energy/power accounting) are
-*unchanged* and still model the Orin NX companion computer specifically
-(`_TDP_W`, `_N_CORES`, etc. are all Orin-NX constants) — the codebase now
-models two different pieces of hardware for two different purposes:
-planning-deadline timing (flight-controller-class MCU) and energy
-accounting (companion-computer-class Orin NX). That's a defensible
-division of labor if the two subsystems genuinely run on different
-hardware in a real deployment, but it's not automatic or free — it should
-be stated plainly in any writeup rather than left for a reader to
-discover by diffing constants.
-
----
-
-## Real C-native APE algorithms (Bug / DWA / VFH)
-
-Two more changes closed remaining gaps between this codebase and the
-paper's design, and between the "compute cost" model and what the code
-actually does.
-
-**1. The APEs are real algorithms now, not simplified heuristics.**
-APE1 = a reactive potential-field/Bug-style controller, APE2 = real
-Dynamic Window Approach (Fox, Burgard & Thrun 1997), APE3 = real Vector
-Field Histogram (Borenstein & Koren 1991) with a valley-search step —
-restoring the fidelity gap flagged earlier in this document, where
-APE3 was supposed to be a "Map Search algorithm" per the paper but was
-actually a confidence-weighted sidestep heuristic. See
-`docs/gem5_power_study.md` §5 for the algorithm details and measured
-gem5 cycle costs.
-
-**2. Python's role in the APE path is now marshaling only — all
-algorithm logic moved to C.** `_evt_plan_ape1/2/3()` in
-`nav_algorithm_T.py` used to run real Python decision math
-(`_shared_motion_caps`, `_confidence_from_scan`, etc.) *separately* from
-a synthetic C op-count workload that only existed to consume CPU cycles
-matching a gem5-measured budget — two independent implementations that
-had to be kept in sync by hand, which caused two rounds of real bugs
-this session (a stale `_APE2_UNIQUE` profile with phantom scans, an
-undocumented `sqrt≈div×2` approximation). Both problems are gone at the
-root: there is now exactly one implementation of each APE's decision
-logic (`ca_navigator/native/ape_ops/src/ape{1,2,3}_*.c`), written in C,
-called from Python via `ape_native.py`, and gem5 measures that same real
-code directly. Python's remaining job — marshal the raw LiDAR scan +
-config into a `ctypes` struct, call the native planner, unpack
-`(v, wz, vz, score)`, hand it to the (unchanged) selector — matches the
-isolation the paper's MISD framing already called for even more
-strictly: each APE is now a genuinely separate, independently-compiled
-unit of computation, not three Python closures sharing an interpreter.
-
-**3. This also (mostly) resolves the deadline/budget mismatch — with
-real algorithmic cost, not another tuned constant.** Real DWA/VFH do
-genuinely more work than the old synthetic op-count profiles: gem5-measured
-MCU-approximation budgets are now **APE1≈29ms / APE2≈716ms / APE3≈1257ms**
-(up from the synthetic study's 15.9/16.8/58.6ms) — comparable in
-magnitude to real event deadlines (147ms-3500ms) for the first time,
-rather than needing a separately-justified deadline floor. This was a
-consequence of implementing real algorithms, not a target chosen in
-advance; whether it produces genuine APE1/APE2 selections under `CA`
-mode in live operation (versus APE3 still usually winning) is the
-natural next thing to re-measure — see `docs/gem5_power_study.md` §5.4.
-
-**4. Multi-layer sensing.** APE3 also gained genuinely richer input:
-the simulated LiDAR now has 5 vertical layers (`models/x3-uav/4/model.sdf`),
-feeding APE3's VFH histogram with multi-layer obstacle consensus (a
-sector is blocked if *any* layer sees a close obstacle there) — real
-altitude-awareness APE1/APE2 don't have, justifying APE3's extra cost
-with genuinely richer data, not just more arithmetic on the same input.
-Getting this sensor data to APE3 required a real infrastructure decision,
-not just an SDF edit: `sensor_msgs/LaserScan` can't represent multi-layer
-data at all, and empirical testing (before writing any code, not assumed)
-found `ros_gz_bridge`'s `LaserScan` converter silently truncates a
-multi-layer scan to one layer with no warning. Multi-layer data instead
-flows through the sensor's native point-cloud topic
-(`PointCloud2`, which the bridge does support correctly) via a new,
-APE3-only subscriber — the original `LaserScan` path, and everything
-downstream of it (APE1, APE2, the base avoidance loop), is untouched.
-
-**5. Compute-energy accounting fixed to use the right hardware's
-numbers.** `OrinNxCycleMeter.record_event()` (`orin_nx_cycle_model.py`)
-previously read the generic, live `APE_LATENCY_US` symbol — which,
-since the MCU rewire earlier in this work, is Cortex-M7-approximation
-timing (ms-scale). But the surrounding energy formula
-(`latency_to_energy_j`) is parameterized with real Orin NX datasheet
-constants (TDP=25W, N_cores=8, idle_frac) — physically meaningful only
-paired with Orin-NX-measured compute duration (µs-scale). This silently
-mixed two hardware targets: Orin-NX power constants integrated over
-MCU-scale compute time. `record_event()` now explicitly uses
-`_GEM5_A78_LATENCY_US` instead — the deliberate, documented split is:
-`budget_ms` (MCU-class) drives planning-deadline timing, since that's
-the tightest realistic reaction-time constraint and what makes the CA
-tradeoff meaningful; compute energy uses the Orin-NX numbers, matching
-a realistic deployment where compute this heavy (real DWA/VFH) runs on
-a Jetson-class companion computer onboard the drone. Two different
-questions, two correctly-paired models — not an accident, and not
-interchangeable. The practical effect on `compute_energy_j` is currently
-small either way (compute time is negligible next to mission wall-clock
+**Planning-deadline timing models the flight controller; energy
+accounting models the companion computer — deliberately two different
+hardware targets.** `orin_nx_cycle_model.py`'s `APE_LATENCY_US` (what
+`nav_algorithm_T.py`'s `budget_ms` derives from) is sourced from the
+Cortex-M7-approximation gem5 study (`configs/cortex_m7_inorder.py`, an
+in-order MinorCPU config — gem5 has no true M-profile CPU model; see that
+file's docstring for caveats), since real ArduPilot-class flight
+controllers run on Cortex-M-class MCUs and that is the tightest realistic
+reaction-time constraint — what makes the CA speed/accuracy tradeoff
+meaningful. `OrinNxCycleMeter.record_event()` (`orin_nx_cycle_model.py`),
+by contrast, uses `_GEM5_A78_LATENCY_US` (the Cortex-A78/Orin-NX gem5
+study) for compute-energy accounting, since `latency_to_energy_j` is
+parameterized with real Orin NX datasheet constants (TDP=25W, N_cores=8,
+idle_frac) that are only physically meaningful paired with
+Orin-NX-measured compute duration. This is a defensible division of labor
+— compute this heavy (real DWA/VFH) plausibly runs on a Jetson-class
+companion computer while planning deadlines are bounded by a
+Cortex-M-class flight controller — not an accident or an interchangeable
+pair of constants. The practical effect on `compute_energy_j` is
+currently small (compute time is negligible next to mission wall-clock
 time regardless of which figure is used, so `U_eff` stays pinned near 0
-and energy stays near the idle-power floor) — but the reasoning is now
-coherent, which matters more as compute cost grows.
+and energy stays near the idle-power floor), but the reasoning matters
+more as compute cost grows.
+
+**Measured budgets are now comparable in magnitude to real event
+deadlines, and produce genuine mixed selection in live operation.**
+gem5-measured MCU-approximation budgets are **APE1≈29ms / APE2≈716ms /
+APE3≈1257ms** — comparable to real event deadlines (147ms-3500ms in
+`ca_navigator/config.py`) for the first time, a consequence of
+implementing real algorithms rather than a target chosen in advance. A
+live measurement across 10 CA-mode runs (260 event resolutions) confirms
+this actually engages the speed/accuracy tradeoff: APE1 wins 65.0%,
+APE3 17.7%, APE2 17.3%, with zero deadline/preemptive violations — a
+sharp contrast from the old synthetic-workload model, where APE3 won
+every resolution (11/11). See `docs/gem5_power_study.md` for the full
+breakdown. Whether `DEADLINE_SCALE=1000` (`orin_nx_cycle_model.py`) still
+needs adjustment on top of these budgets remains an open, unverified
+question.
+
+**Multi-layer sensing.** APE3 has richer input than APE1/APE2: the
+simulated LiDAR has 5 vertical layers (`models/x3-uav/4/model.sdf`),
+feeding APE3's VFH histogram with multi-layer obstacle consensus (a
+sector is blocked if *any* layer sees a close obstacle there). This
+required a real infrastructure decision, not just an SDF edit:
+`sensor_msgs/LaserScan` can't represent multi-layer data at all, and
+`ros_gz_bridge`'s `LaserScan` converter silently truncates a multi-layer
+scan to one layer with no warning (confirmed empirically before writing
+any code). Multi-layer data instead flows through the sensor's native
+point-cloud topic (`PointCloud2`, which the bridge does support
+correctly) via a new, APE3-only subscriber — the original `LaserScan`
+path, and everything downstream of it (APE1, APE2, the base avoidance
+loop), is untouched.

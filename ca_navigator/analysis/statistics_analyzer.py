@@ -40,6 +40,21 @@ def run_analysis(zone_metric: str = "mean") -> Dict[str, Any]:
     # ---------- Read ----------
     df_raw = pd.read_csv(csv_path)
 
+    # Physically-grounded compute/propulsion/total power + per-mission energy
+    # + endurance (Glauert forward-flight momentum theory, calibrated against
+    # real DJI FlyCart 30 spec-sheet hover data — see power_estimate.py).
+    # Optional: only computed if the required source columns are present, so
+    # this doesn't break analysis of older/partial CSVs.
+    _phys_cols = ("compute_energy_j", "propulsion_mean_power_w")
+    _have_phys_cols = all(
+        any(c.strip().lower() == want.lower() for c in df_raw.columns)
+        for want in _phys_cols
+    )
+    df_phys: pd.DataFrame | None = None
+    if _have_phys_cols:
+        from ca_navigator.analysis.power_estimate import per_run_physical_metrics
+        df_phys = per_run_physical_metrics(df_raw, float(cfg.target_distance))
+
     # ---------- Column resolution ----------
     def resolve(col_name_expected: str) -> str:
         expected_lower = col_name_expected.strip().lower()
@@ -77,6 +92,7 @@ def run_analysis(zone_metric: str = "mean") -> Dict[str, Any]:
     # Optional / legacy columns
     col_run = resolve_opt("run")
     col_compute_latency_us = resolve_opt("compute_latency_us")
+    col_compute_energy_j = resolve_opt("compute_energy_j")
     col_events_handled = resolve_opt("events_handled")
     col_event_violation_rate = resolve_opt("event_violation_rate")
     col_event_violated_deadline   = resolve_opt("event_violated_deadline")
@@ -102,6 +118,11 @@ def run_analysis(zone_metric: str = "mean") -> Dict[str, Any]:
     else:
         data["_compute_latency"] = pd.Series(np.nan, index=df_raw.index, dtype=float)
 
+    if col_compute_energy_j is not None:
+        data["_compute_energy_j"] = to_num(df_raw[col_compute_energy_j])
+    else:
+        data["_compute_energy_j"] = pd.Series(np.nan, index=df_raw.index, dtype=float)
+
     if col_events_handled is not None:
         data["_events_handled"] = to_num(df_raw[col_events_handled])
     else:
@@ -126,6 +147,17 @@ def run_analysis(zone_metric: str = "mean") -> Dict[str, Any]:
         data["_evt_viol_preemptive"] = to_num(df_raw[col_event_violated_preemptive])
     else:
         data["_evt_viol_preemptive"] = pd.Series(np.nan, index=df_raw.index, dtype=float)
+
+    if df_phys is not None:
+        data["_compute_power_w"] = df_phys["compute_power_w"].reindex(df_raw.index)
+        data["_propulsion_power_w_physical"] = df_phys["propulsion_power_w"].reindex(df_raw.index)
+        data["_total_power_w"] = df_phys["total_power_w"].reindex(df_raw.index)
+        data["_energy_per_mission_kj"] = df_phys["energy_per_mission_kj"].reindex(df_raw.index)
+        data["_endurance_min"] = df_phys["endurance_min"].reindex(df_raw.index)
+    else:
+        for key in ("_compute_power_w", "_propulsion_power_w_physical", "_total_power_w",
+                    "_energy_per_mission_kj", "_endurance_min"):
+            data[key] = pd.Series(np.nan, index=df_raw.index, dtype=float)
 
     df_f = pd.DataFrame(data)
     if df_f.empty:
@@ -160,6 +192,18 @@ def run_analysis(zone_metric: str = "mean") -> Dict[str, Any]:
         summary["compute_latency_median_us"] = g["_compute_latency"].apply(med)
         summary["compute_latency_mean_us"]   = g["_compute_latency"].mean()
 
+    # Accumulated compute energy per run (raw Joules, not power) — dominated
+    # by mission duration at this platform's idle/TDP ratio (see
+    # power_estimate.py), so this tracks time-to-goal more than per-event
+    # compute intensity; compute_latency_*_us above is the metric that
+    # isolates true per-event compute cost. Kept as its own column since the
+    # two tell different stories (e.g. CA has 11x APE1's per-event latency
+    # but ~42% LESS total compute energy per run, because CA finishes sooner).
+    if not df_f["_compute_energy_j"].isna().all():
+        summary["compute_energy_j_median"] = g["_compute_energy_j"].apply(med)
+        summary["compute_energy_j_mean"]   = g["_compute_energy_j"].mean()
+        summary["compute_energy_j_sum"]    = g["_compute_energy_j"].sum()
+
     # Event-related summaries (if present)
     if not df_f["_event_violation_rate"].isna().all():
         summary["event_violation_rate_median"] = g["_event_violation_rate"].apply(med)
@@ -169,6 +213,20 @@ def run_analysis(zone_metric: str = "mean") -> Dict[str, Any]:
         summary["event_viol_deadline_mean"]   = g["_evt_viol_deadline"].mean()
     if not df_f["_evt_viol_preemptive"].isna().all():
         summary["event_viol_preemptive_mean"] = g["_evt_viol_preemptive"].mean()
+
+    # Physically-grounded power/energy summary (if source columns were present).
+    # See ca_navigator/analysis/power_estimate.py for the model (Glauert
+    # forward-flight momentum theory + parasite drag, calibrated against real
+    # DJI FlyCart 30 spec-sheet hover data) — distinct from, and more accurate
+    # than, propulsion_mean_power_kw_mean above (the repo's EPM distance-only
+    # constant, which has no hover term).
+    if not df_f["_total_power_w"].isna().all():
+        summary["compute_power_w_mean"]        = g["_compute_power_w"].mean()
+        summary["propulsion_power_w_physical_mean"] = g["_propulsion_power_w_physical"].mean()
+        summary["total_power_w_mean"]          = g["_total_power_w"].mean()
+        summary["energy_per_mission_kj_median"] = g["_energy_per_mission_kj"].apply(med)
+        summary["energy_per_mission_kj_mean"]   = g["_energy_per_mission_kj"].mean()
+        summary["endurance_min_mean"]           = g["_endurance_min"].mean()
 
     # ---------- Write summary CSV and return ----------
     summary_csv = os.path.join(out_dir, f"strategy_summary_zone-{zm}.csv")

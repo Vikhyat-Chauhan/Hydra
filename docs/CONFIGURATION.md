@@ -78,7 +78,7 @@ Deterministic, seeded generation of roads (carved as free space on a major/minor
 | `deadline_min_s` | `float` | `0.147` | Minimum deadline clamp (seconds) |
 | `deadline_max_s` | `float` | `3.50` | Maximum deadline clamp (seconds) |
 
-`deadline_min_s` is derived from the sudden-obstacle reaction window: `(sudden_obj_radius_m + vehicle_radius_m + sudden_obj_clearance_m) / v_max = (1.2 + 0.7 + 0.3) / 15.0 ≈ 0.147s` → ~2.2 m reaction distance at `v_max = 15 m/s`. `deadline_max_s = 3.50s` → ~52.5 m far-field horizon. See `docs/ca_architecture_deviations.md` for the history behind this retuning.
+`deadline_min_s` is derived from the sudden-obstacle reaction window: `(sudden_obj_radius_m + vehicle_radius_m + sudden_obj_clearance_m) / v_max = (1.2 + 0.7 + 0.3) / 15.0 ≈ 0.147s` → ~2.2 m reaction distance at `v_max = 15 m/s`. `deadline_max_s = 3.50s` → ~52.5 m far-field horizon. See `docs/ca_architecture_deviations.md` ("Event timing floors") for the `EventCfg.deadline_min_s` derivation.
 
 Note: `EventCfg` (the runtime config actually used by `event_emitter.py`) has its own independently-tuned `deadline_min_s = 0.073s` floor — it is **not** derived from `TeleopConfig.deadline_min_s` above; the two are intentionally decoupled (see `event_emitter.py`'s `EventCfg` docstring).
 

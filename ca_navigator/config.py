@@ -7,16 +7,16 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 @dataclass
 class TeleopConfig:
     # --- Run Options ---
-    simulation_runs = 5
+    simulation_runs = 10
     simulation_timeout = 200
     simulation_world_style = "city" #"perlin|city"
     # --- Sim / world ---
     world_path: str = os.path.join(PROJECT_ROOT, "worlds", "airport_world.sdf")
-    sim_cmd: tuple[str, ...] = ("gz", "sim", "-r")#, "-s")
+    sim_cmd: tuple[str, ...] = ("gz", "sim", "-r", "-s")
     sim_env: dict | None = None
     sim_boot_secs: float = 8.0
     fixed_seed = False
-    world_gen_seed_offset = 4321
+    world_gen_seed_offset = 1238
     target_distance = 150
     # --- Gazebo transport ---
     topic: str = "/model/drone1/cmd_vel"  # gz.msgs.Twist

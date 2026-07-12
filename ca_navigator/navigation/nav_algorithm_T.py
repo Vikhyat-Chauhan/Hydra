@@ -113,10 +113,9 @@ class RiskCfg:
 
 # APE planning budgets (ms), computed live from orin_nx_cycle_model.py's
 # gem5-measured APE_LATENCY_US (Cortex-M7-approximation) so they can never
-# drift from the model they're derived from. See docs/gem5_power_study.md
-# §3.1 for the drift bug this fixes and docs/ca_architecture_deviations.md
-# for why planning-timing and energy-accounting (OrinNxCycleMeter) model
-# different hardware.
+# drift from the model they're derived from. See
+# docs/ca_architecture_deviations.md for why planning-timing and
+# energy-accounting (OrinNxCycleMeter) model different hardware.
 _APE1_BUDGET_MS = APE_LATENCY_US["APE1"] * DEADLINE_SCALE / 1000.0
 _APE2_BUDGET_MS = APE_LATENCY_US["APE2"] * DEADLINE_SCALE / 1000.0
 _APE3_BUDGET_MS = APE_LATENCY_US["APE3"] * DEADLINE_SCALE / 1000.0

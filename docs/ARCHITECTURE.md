@@ -219,7 +219,7 @@ Raw LaserScan (360° or limited arc)
 └────────────────────────────┘
 ```
 
-APE3/VFH additionally consumes a 5-layer `PointCloud2` (`_CloudSub`) for multi-layer obstacle consensus — `LaserScan` has no vertical dimension, and `ros_gz_bridge`'s `LaserScan` converter silently truncates multi-layer scans to one layer. See `docs/ca_architecture_deviations.md` §4 ("Multi-layer sensing") for why.
+APE3/VFH additionally consumes a 5-layer `PointCloud2` (`_CloudSub`) for multi-layer obstacle consensus — `LaserScan` has no vertical dimension, and `ros_gz_bridge`'s `LaserScan` converter silently truncates multi-layer scans to one layer. See `docs/ca_architecture_deviations.md` ("Multi-layer sensing") for why.
 
 ### Safety Subsystems
 

@@ -166,7 +166,7 @@ def main() -> None:
                     (
                         # Multi-layer point cloud, feeds APE3/VFH only (see
                         # nav_algorithm_T.py's _CloudSub). See
-                        # docs/ca_architecture_deviations.md §4.
+                        # docs/ca_architecture_deviations.md ("Multi-layer sensing").
                         "/model/drone1/front_lidar/scan/points",
                         "sensor_msgs/msg/PointCloud2",
                         "gz.msgs.PointCloudPacked",
